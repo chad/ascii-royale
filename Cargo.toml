@@ -1,0 +1,20 @@
+[package]
+name = "ascii-royale"
+version = "0.1.0"
+edition = "2021"
+description = "Terminal battle royale — peer-to-peer over iroh, no central server"
+license = "MIT"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+iroh = "1.0.0-rc.1"
+postcard = { version = "1", features = ["alloc", "use-std"] }
+rand = "0.9"
+ratatui = "0.30"
+serde = { version = "1", features = ["derive"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "signal"] }
+
+[profile.release]
+lto = true
+strip = true
