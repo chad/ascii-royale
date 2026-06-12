@@ -15,6 +15,7 @@ use crate::game::map::{Map, Tile};
 use crate::game::state::{InputCmd, Snapshot};
 use crate::game::Dir;
 use crate::net::protocol::{ClientMsg, ServerHandle, ServerMsg, Standing};
+use crate::ui::keys::{Action, Keybinds};
 use crate::ui::sound::Sounds;
 
 const FEED_LINES: usize = 64;
@@ -39,6 +40,14 @@ pub struct App {
     feed: VecDeque<String>,
     link_lost: bool,
     sounds: Sounds,
+    binds: Keybinds,
+    keys_ui: Option<KeysUi>,
+}
+
+/// State of the key-rebinding overlay (opened with `k`).
+struct KeysUi {
+    selected: usize,
+    awaiting: bool,
 }
 
 /// Run the whole client UI on the calling thread; network tasks keep
@@ -56,6 +65,8 @@ pub fn run(handle: ServerHandle, ticket: Option<String>, is_host: bool) -> Resul
         feed: VecDeque::new(),
         link_lost: false,
         sounds: Sounds::new(),
+        binds: Keybinds::load(),
+        keys_ui: None,
     };
     let mut terminal = ratatui::init();
     let result = app.main_loop(&mut terminal);
@@ -122,7 +133,18 @@ impl App {
         if code == KeyCode::Char('c') && mods.contains(KeyModifiers::CONTROL) {
             return true;
         }
-        if code == KeyCode::Char('M') {
+        // The rebinding overlay swallows all input while open.
+        if self.keys_ui.is_some() {
+            self.on_keys_ui_key(code);
+            return false;
+        }
+        if code == KeyCode::Char('k')
+            && matches!(self.screen, Screen::Lobby | Screen::Results(_))
+        {
+            self.keys_ui = Some(KeysUi { selected: 0, awaiting: false });
+            return false;
+        }
+        if self.binds.action_for(code) == Some(Action::Mute) {
             self.sounds.toggle_mute();
             return false;
         }
@@ -143,22 +165,51 @@ impl App {
                 _ => false,
             },
             Screen::Game => {
-                let cmd = match code {
-                    KeyCode::Char('q') | KeyCode::Esc => return true,
-                    KeyCode::Up | KeyCode::Char('w') => Some(InputCmd::Move(Dir::North)),
-                    KeyCode::Down | KeyCode::Char('s') => Some(InputCmd::Move(Dir::South)),
-                    KeyCode::Left | KeyCode::Char('a') => Some(InputCmd::Move(Dir::West)),
-                    KeyCode::Right | KeyCode::Char('d') => Some(InputCmd::Move(Dir::East)),
-                    KeyCode::Char(' ') | KeyCode::Char('f') => Some(InputCmd::Fire),
-                    KeyCode::Char('e') | KeyCode::Char('g') => Some(InputCmd::Pickup),
-                    KeyCode::Char('h') | KeyCode::Char('m') => Some(InputCmd::Heal),
-                    _ => None,
+                if matches!(code, KeyCode::Char('q') | KeyCode::Esc) {
+                    return true;
+                }
+                let cmd = match self.binds.action_for(code) {
+                    Some(Action::Up) => Some(InputCmd::Move(Dir::North)),
+                    Some(Action::Down) => Some(InputCmd::Move(Dir::South)),
+                    Some(Action::Left) => Some(InputCmd::Move(Dir::West)),
+                    Some(Action::Right) => Some(InputCmd::Move(Dir::East)),
+                    Some(Action::Fire) => Some(InputCmd::Fire),
+                    Some(Action::Pickup) => Some(InputCmd::Pickup),
+                    Some(Action::Heal) => Some(InputCmd::Heal),
+                    Some(Action::Mute) | None => None,
                 };
                 if let Some(cmd) = cmd {
                     let _ = self.handle.tx.try_send(ClientMsg::Input(cmd));
                 }
                 false
             }
+        }
+    }
+
+    fn on_keys_ui_key(&mut self, code: KeyCode) {
+        let Some(ui) = &mut self.keys_ui else { return };
+        if ui.awaiting {
+            match code {
+                KeyCode::Esc => ui.awaiting = false,
+                _ => {
+                    if self.binds.bind(Action::ALL[ui.selected], code) {
+                        ui.awaiting = false;
+                        let _ = self.binds.save();
+                    }
+                }
+            }
+            return;
+        }
+        match code {
+            KeyCode::Esc | KeyCode::Char('k') | KeyCode::Char('q') => self.keys_ui = None,
+            KeyCode::Up => ui.selected = ui.selected.saturating_sub(1),
+            KeyCode::Down => ui.selected = (ui.selected + 1).min(Action::ALL.len() - 1),
+            KeyCode::Enter => ui.awaiting = true,
+            KeyCode::Char('r') => {
+                self.binds.reset();
+                let _ = self.binds.save();
+            }
+            _ => {}
         }
     }
 
@@ -179,6 +230,9 @@ impl App {
                 ],
             ),
         }
+        if let Some(ui) = &self.keys_ui {
+            self.draw_keys_ui(f, ui);
+        }
         if self.link_lost {
             let area = centered(f.area(), 40, 5);
             f.render_widget(Clear, area);
@@ -191,6 +245,40 @@ impl App {
             .block(Block::bordered().border_style(Style::new().red()));
             f.render_widget(p, area);
         }
+    }
+
+    fn draw_keys_ui(&self, f: &mut Frame, ui: &KeysUi) {
+        let h = Action::ALL.len() as u16 + 6;
+        let area = centered(f.area(), 44, h);
+        f.render_widget(Clear, area);
+        let mut lines: Vec<Line> = vec![Line::raw("")];
+        for (i, action) in Action::ALL.iter().enumerate() {
+            let marker = if i == ui.selected { "> " } else { "  " };
+            let label = format!("{marker}{:<10}", action.name());
+            let keys = if i == ui.selected && ui.awaiting {
+                "press a key...".to_string()
+            } else {
+                self.binds.keys_label(*action)
+            };
+            let row = format!("{label} {keys}");
+            lines.push(if i == ui.selected {
+                Line::from(row.yellow().bold())
+            } else {
+                Line::from(row)
+            });
+        }
+        lines.push(Line::raw(""));
+        lines.push(Line::from(
+            if ui.awaiting {
+                "esc to cancel"
+            } else {
+                "up/down select · enter rebind · r reset · k close"
+            }
+            .dark_gray(),
+        ));
+        let p = Paragraph::new(lines)
+            .block(Block::bordered().title(" key bindings (arrows always move) "));
+        f.render_widget(p, area);
     }
 
     fn draw_center_box(&self, f: &mut Frame, title: &str, lines: Vec<Line>) {
@@ -226,9 +314,11 @@ impl App {
         }
         lines.push(Line::raw(""));
         if self.is_host {
-            lines.push(Line::from("[enter] drop in (bots fill empty slots) · [q] quit".dark_gray()));
+            lines.push(Line::from(
+                "[enter] drop in (bots fill empty slots) · [k] keys · [q] quit".dark_gray(),
+            ));
         } else {
-            lines.push(Line::from("waiting for host to start · [q] quit".dark_gray()));
+            lines.push(Line::from("waiting for host to start · [k] keys · [q] quit".dark_gray()));
         }
         let h = (lines.len() as u16 + 4).min(f.area().height);
         let area = centered(f.area(), 72, h);
@@ -290,15 +380,23 @@ impl App {
 
         self.draw_sidebar(f, side, snap);
 
+        let b = &self.binds;
         let sound = if !self.sounds.available() {
-            ""
+            String::new()
         } else if self.sounds.muted {
-            " · M unmute"
+            format!(" · {} unmute", b.keys_label(Action::Mute))
         } else {
-            " · M mute"
+            format!(" · {} mute", b.keys_label(Action::Mute))
         };
         let controls = format!(
-            "wasd/arrows move+aim · f/space fire where you aim · e pickup · h heal{sound} · q quit"
+            "{}{}{}{}/arrows move+aim · {} fire · {} pickup · {} heal{sound} · q quit",
+            b.keys_label(Action::Up),
+            b.keys_label(Action::Left),
+            b.keys_label(Action::Down),
+            b.keys_label(Action::Right),
+            b.keys_label(Action::Fire),
+            b.keys_label(Action::Pickup),
+            b.keys_label(Action::Heal),
         );
         f.render_widget(Paragraph::new(controls.dark_gray()).centered(), status);
 
@@ -659,6 +757,8 @@ pub(crate) mod tests {
             feed: VecDeque::new(),
             link_lost: false,
             sounds: Sounds::disabled(),
+            binds: Keybinds::default(),
+            keys_ui: None,
         }
     }
 
@@ -723,6 +823,8 @@ pub(crate) mod tests {
     }
 
     pub(super) fn print_midgame_frame() {
+        use crate::game::items::WeaponKind;
+        use crate::game::state::InputCmd;
         let mut app = test_app();
         let mut world = World::new(7, GameConfig::default());
         world.add_player("chad".into(), false);
@@ -738,11 +840,46 @@ pub(crate) mod tests {
         while world.phase != MatchPhase::Active {
             world.step();
         }
-        for _ in 0..600 {
+        for _ in 0..150 {
             world.step();
         }
-        let snap = world.snapshot_for(0, &["bot1 eliminated bot2 (SMG)".to_string()]);
+        // Stage a firefight near a building for the screenshot.
+        let poi = world.map.pois[3];
+        world.players[0].pos = (poi.0 - 6, poi.1 + 2);
+        world.players[0].weapon = WeaponKind::Rifle;
+        world.players[0].ammo = 24;
+        world.players[0].armor = 31;
+        world.players[0].hp = 64;
+        world.players[0].kills = 2;
+        world.players[1].pos = (poi.0 + 6, poi.1 + 2);
+        world.players[1].hp = 100;
+        world.queue_input(0, InputCmd::Fire);
+        world.step();
+        let snap = world.snapshot_for(
+            0,
+            &["bot3 eliminated bot5 (Shotgun)".to_string(), "Zone closing: 20s".to_string()],
+        );
         app.on_server_msg(ServerMsg::Snapshot(Box::new(snap)));
+        println!("{}", frame_text(&app));
+    }
+
+    pub(super) fn print_lobby_frame() {
+        let mut app = test_app();
+        let world = World::new(11, GameConfig::default());
+        app.on_server_msg(ServerMsg::Welcome { id: 0, map: world.map, config: world.config });
+        app.on_server_msg(ServerMsg::Roster {
+            names: vec!["chad".into(), "wanderer".into(), "kex".into()],
+        });
+        println!("{}", frame_text(&app));
+    }
+
+    pub(super) fn print_keys_frame() {
+        let mut app = test_app();
+        let world = World::new(11, GameConfig::default());
+        app.on_server_msg(ServerMsg::Welcome { id: 0, map: world.map, config: world.config });
+        app.on_server_msg(ServerMsg::Roster { names: vec!["chad".into()] });
+        app.on_key(KeyCode::Char('k'), KeyModifiers::NONE);
+        app.on_key(KeyCode::Down, KeyModifiers::NONE);
         println!("{}", frame_text(&app));
     }
 
@@ -771,5 +908,17 @@ mod preview {
     #[ignore = "visual aid, run with --nocapture to see a frame"]
     fn print_game_frame() {
         helpers::print_midgame_frame();
+    }
+
+    #[test]
+    #[ignore = "visual aid, run with --nocapture to see a frame"]
+    fn print_lobby_frame() {
+        helpers::print_lobby_frame();
+    }
+
+    #[test]
+    #[ignore = "visual aid, run with --nocapture to see a frame"]
+    fn print_keys_frame() {
+        helpers::print_keys_frame();
     }
 }

@@ -35,6 +35,13 @@ Status legend: [ ] todo · [x] done · [~] in progress
 - [x] README.md with usage + controls
 - [x] full build, clippy clean, headless sim test, pty smoke test (solo)
 
+## Post-launch features — DONE
+- [x] Guns spawn loaded; aim crosshair; NO AMMO warning; nearest-gun hint
+- [x] Aim snap, tracer trails + impact markers, latched fire, damage retune
+- [x] Procedural 8-bit sound (rodio, synthesized, snapshot-diff driven)
+- [x] Rebindable keys: `k` config screen, ~/.config/ascii-royale/keys.conf
+- [x] README with captured frames, LICENSE, published to GitHub
+
 ## Ideas for later (not started)
 - [ ] Spectate the killer instead of your corpse; match restart from results
 - [ ] Shotgun spread / diagonal aiming; throwables; airdrops

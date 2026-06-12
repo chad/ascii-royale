@@ -1,9 +1,8 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
-use ascii_royale::net::host::{self, HostOpts};
-use ascii_royale::net::protocol::ClientMsg;
 use ascii_royale::net::client;
+use ascii_royale::net::host::{self, HostOpts};
 use ascii_royale::ui;
 
 #[derive(Parser)]
@@ -67,10 +66,9 @@ fn main() -> Result<()> {
             ui::tui::run(handle, None, false)?;
         }
         Command::Solo { name, bots } => {
+            // Solo goes through the lobby too: that's where key config lives.
             let hosted =
                 rt.block_on(host::start(HostOpts { name, bots, networked: false }))?;
-            // No lobby to linger in offline: drop straight in.
-            hosted.handle.tx.blocking_send(ClientMsg::Start)?;
             ui::tui::run(hosted.handle, None, true)?;
         }
     }
