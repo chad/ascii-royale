@@ -70,7 +70,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         feed.truncate(12);
         let in_segment = segments.iter().any(|(a, b)| tick >= *a && tick < *b);
-        if !in_segment || tick % 2 != 0 {
+        if !in_segment || !tick.is_multiple_of(2) {
             continue;
         }
         let snap = world.snapshot_for(winner, &lines);
