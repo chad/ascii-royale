@@ -1,0 +1,15 @@
+[Unit]
+Description=ascii-royale arena (headless host)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/ascii-royale serve --bots 7 --ticket-file /run/royale/ticket
+RuntimeDirectory=royale
+RuntimeDirectoryMode=0755
+User=boxd
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

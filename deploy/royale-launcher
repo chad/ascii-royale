@@ -1,0 +1,36 @@
+#!/bin/bash
+# ascii-royale SSH arena launcher. This is the forced command for the `play`
+# user: pick a name, join the arena running on this box, repeat or leave.
+set -u
+
+TICKET_FILE=/run/royale/ticket
+
+if [ ! -t 0 ]; then
+    echo "ascii-royale needs an interactive terminal: ssh -t ..." >&2
+    exit 1
+fi
+
+echo
+echo "  ascii-royale — terminal battle royale"
+echo "  wasd move+aim · f fire · e pickup · h heal · q quit"
+echo
+
+while true; do
+    if [ ! -s "$TICKET_FILE" ]; then
+        echo "the arena is rebooting, give it a few seconds and come back."
+        exit 1
+    fi
+    printf "  call sign (enter for random): "
+    read -r name || exit 0
+    name=$(echo "$name" | tr -cd '[:alnum:]_-' | cut -c1-12)
+    if [ -z "$name" ]; then
+        name="drifter$((RANDOM % 900 + 100))"
+    fi
+    /usr/local/bin/ascii-royale join "$(cat "$TICKET_FILE")" --name "$name"
+    echo
+    printf "  play again? [Y/n] "
+    read -r again || exit 0
+    case "$again" in
+        n|N|q|Q) exit 0 ;;
+    esac
+done
