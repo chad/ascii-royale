@@ -1,0 +1,548 @@
+use std::collections::VecDeque;
+use std::time::Duration;
+
+use anyhow::Result;
+use ratatui::buffer::Buffer;
+use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::style::{Color, Modifier, Style, Stylize};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
+use ratatui::Frame;
+
+use crate::game::items::ItemKind;
+use crate::game::map::{Map, Tile};
+use crate::game::state::{InputCmd, Snapshot};
+use crate::game::Dir;
+use crate::net::protocol::{ClientMsg, ServerHandle, ServerMsg, Standing};
+
+const FEED_LINES: usize = 64;
+
+enum Screen {
+    Connecting,
+    Lobby,
+    Game,
+    Results(Vec<Standing>),
+    Fatal(String),
+}
+
+pub struct App {
+    handle: ServerHandle,
+    screen: Screen,
+    ticket: Option<String>,
+    is_host: bool,
+    map: Option<Map>,
+    my_id: u8,
+    snap: Option<Snapshot>,
+    roster: Vec<String>,
+    feed: VecDeque<String>,
+    link_lost: bool,
+}
+
+/// Run the whole client UI on the calling thread; network tasks keep
+/// running on the tokio runtime in the background.
+pub fn run(handle: ServerHandle, ticket: Option<String>, is_host: bool) -> Result<()> {
+    let mut app = App {
+        handle,
+        screen: Screen::Connecting,
+        ticket,
+        is_host,
+        map: None,
+        my_id: 0,
+        snap: None,
+        roster: Vec::new(),
+        feed: VecDeque::new(),
+        link_lost: false,
+    };
+    let mut terminal = ratatui::init();
+    let result = app.main_loop(&mut terminal);
+    ratatui::restore();
+    result
+}
+
+impl App {
+    fn main_loop(&mut self, terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
+        loop {
+            // Drain everything the server sent since last frame.
+            loop {
+                match self.handle.rx.try_recv() {
+                    Ok(msg) => self.on_server_msg(msg),
+                    Err(tokio::sync::mpsc::error::TryRecvError::Empty) => break,
+                    Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                        if !matches!(self.screen, Screen::Results(_) | Screen::Fatal(_)) {
+                            self.link_lost = true;
+                        }
+                        break;
+                    }
+                }
+            }
+
+            terminal.draw(|f| self.draw(f))?;
+
+            if event::poll(Duration::from_millis(33))? {
+                if let Event::Key(key) = event::read()? {
+                    if (key.kind == KeyEventKind::Press || key.kind == KeyEventKind::Repeat)
+                        && self.on_key(key.code, key.modifiers) {
+                            return Ok(());
+                        }
+                }
+            }
+        }
+    }
+
+    fn on_server_msg(&mut self, msg: ServerMsg) {
+        match msg {
+            ServerMsg::Welcome { id, map, .. } => {
+                self.my_id = id;
+                self.map = Some(map);
+                self.screen = Screen::Lobby;
+            }
+            ServerMsg::Roster { names } => self.roster = names,
+            ServerMsg::Snapshot(snap) => {
+                for line in &snap.feed {
+                    self.feed.push_front(line.clone());
+                }
+                self.feed.truncate(FEED_LINES);
+                self.snap = Some(*snap);
+                if matches!(self.screen, Screen::Lobby | Screen::Connecting) {
+                    self.screen = Screen::Game;
+                }
+            }
+            ServerMsg::End { standings } => self.screen = Screen::Results(standings),
+            ServerMsg::Rejected { reason } => self.screen = Screen::Fatal(reason),
+        }
+    }
+
+    /// Returns true when the app should exit.
+    fn on_key(&mut self, code: KeyCode, mods: KeyModifiers) -> bool {
+        if code == KeyCode::Char('c') && mods.contains(KeyModifiers::CONTROL) {
+            return true;
+        }
+        if self.link_lost {
+            return matches!(code, KeyCode::Char('q') | KeyCode::Esc | KeyCode::Enter);
+        }
+        match &self.screen {
+            Screen::Fatal(_) | Screen::Results(_) => {
+                matches!(code, KeyCode::Char('q') | KeyCode::Esc | KeyCode::Enter)
+            }
+            Screen::Connecting => matches!(code, KeyCode::Char('q') | KeyCode::Esc),
+            Screen::Lobby => match code {
+                KeyCode::Char('q') | KeyCode::Esc => true,
+                KeyCode::Enter if self.is_host => {
+                    let _ = self.handle.tx.try_send(ClientMsg::Start);
+                    false
+                }
+                _ => false,
+            },
+            Screen::Game => {
+                let cmd = match code {
+                    KeyCode::Char('q') | KeyCode::Esc => return true,
+                    KeyCode::Up | KeyCode::Char('w') => Some(InputCmd::Move(Dir::North)),
+                    KeyCode::Down | KeyCode::Char('s') => Some(InputCmd::Move(Dir::South)),
+                    KeyCode::Left | KeyCode::Char('a') => Some(InputCmd::Move(Dir::West)),
+                    KeyCode::Right | KeyCode::Char('d') => Some(InputCmd::Move(Dir::East)),
+                    KeyCode::Char(' ') | KeyCode::Char('f') => Some(InputCmd::Fire),
+                    KeyCode::Char('e') | KeyCode::Char('g') => Some(InputCmd::Pickup),
+                    KeyCode::Char('h') | KeyCode::Char('m') => Some(InputCmd::Heal),
+                    _ => None,
+                };
+                if let Some(cmd) = cmd {
+                    let _ = self.handle.tx.try_send(ClientMsg::Input(cmd));
+                }
+                false
+            }
+        }
+    }
+
+    fn draw(&self, f: &mut Frame) {
+        match &self.screen {
+            Screen::Connecting => self.draw_center_box(f, "connecting", connecting_lines()),
+            Screen::Lobby => self.draw_lobby(f),
+            Screen::Game => self.draw_game(f),
+            Screen::Results(standings) => self.draw_results(f, standings),
+            Screen::Fatal(reason) => self.draw_center_box(
+                f,
+                "no dice",
+                vec![
+                    Line::raw(""),
+                    Line::from(reason.clone().red()),
+                    Line::raw(""),
+                    Line::from("press q to exit".dark_gray()),
+                ],
+            ),
+        }
+        if self.link_lost {
+            let area = centered(f.area(), 40, 5);
+            f.render_widget(Clear, area);
+            let p = Paragraph::new(vec![
+                Line::raw(""),
+                Line::from("connection to host lost".red().bold()),
+                Line::from("press q to exit".dark_gray()),
+            ])
+            .centered()
+            .block(Block::bordered().border_style(Style::new().red()));
+            f.render_widget(p, area);
+        }
+    }
+
+    fn draw_center_box(&self, f: &mut Frame, title: &str, lines: Vec<Line>) {
+        let area = centered(f.area(), 60, lines.len() as u16 + 4);
+        let p = Paragraph::new(lines)
+            .centered()
+            .wrap(Wrap { trim: false })
+            .block(Block::bordered().title(format!(" ascii-royale · {title} ")));
+        f.render_widget(p, area);
+    }
+
+    fn draw_lobby(&self, f: &mut Frame) {
+        let mut lines: Vec<Line> = Vec::new();
+        for row in TITLE {
+            lines.push(Line::from((*row).yellow().bold()));
+        }
+        lines.push(Line::raw(""));
+        if let Some(t) = &self.ticket {
+            lines.push(Line::from(vec![
+                "ticket  ".dark_gray(),
+                t.clone().cyan().bold(),
+            ]));
+            lines.push(Line::from(
+                "friends join with: ascii-royale join <ticket>".dark_gray(),
+            ));
+        } else if !self.is_host {
+            lines.push(Line::from("connected to host".green()));
+        }
+        lines.push(Line::raw(""));
+        lines.push(Line::from(format!("combatants ({})", self.roster.len()).bold()));
+        for name in &self.roster {
+            lines.push(Line::from(format!("  @ {name}")));
+        }
+        lines.push(Line::raw(""));
+        if self.is_host {
+            lines.push(Line::from("[enter] drop in (bots fill empty slots) · [q] quit".dark_gray()));
+        } else {
+            lines.push(Line::from("waiting for host to start · [q] quit".dark_gray()));
+        }
+        let h = (lines.len() as u16 + 4).min(f.area().height);
+        let area = centered(f.area(), 72, h);
+        let p = Paragraph::new(lines)
+            .centered()
+            .wrap(Wrap { trim: false })
+            .block(Block::bordered().title(" ascii-royale · lobby "));
+        f.render_widget(p, area);
+    }
+
+    fn draw_results(&self, f: &mut Frame, standings: &[Standing]) {
+        let mut lines: Vec<Line> = Vec::new();
+        for row in TITLE {
+            lines.push(Line::from((*row).yellow().bold()));
+        }
+        lines.push(Line::raw(""));
+        let winner = standings.iter().find(|s| s.placement == Some(1));
+        if let Some(w) = winner {
+            let txt = if w.is_you {
+                "*** VICTORY ROYALE — you win ***".to_string()
+            } else {
+                format!("{} takes the crown", w.name)
+            };
+            lines.push(Line::from(txt.green().bold()));
+            lines.push(Line::raw(""));
+        }
+        for s in standings.iter().take(16) {
+            let place = s.placement.map(|p| format!("#{p:<2}")).unwrap_or("-- ".into());
+            let row = format!("{place} {:<14} {} kills", s.name, s.kills);
+            lines.push(if s.is_you {
+                Line::from(row.yellow().bold())
+            } else {
+                Line::from(row)
+            });
+        }
+        lines.push(Line::raw(""));
+        lines.push(Line::from("press q to exit".dark_gray()));
+        let h = (lines.len() as u16 + 4).min(f.area().height);
+        let area = centered(f.area(), 60, h);
+        let p = Paragraph::new(lines)
+            .centered()
+            .block(Block::bordered().title(" ascii-royale · results "));
+        f.render_widget(p, area);
+    }
+
+    fn draw_game(&self, f: &mut Frame) {
+        let Some(snap) = &self.snap else { return };
+        let Some(map) = &self.map else { return };
+
+        let [main, status] =
+            Layout::vertical([Constraint::Min(5), Constraint::Length(1)]).areas(f.area());
+        let [map_area, side] =
+            Layout::horizontal([Constraint::Min(20), Constraint::Length(26)]).areas(main);
+
+        let map_block = Block::bordered().title(" the island ");
+        let inner = map_block.inner(map_area);
+        f.render_widget(map_block, map_area);
+        render_map(map, snap, inner, f.buffer_mut());
+
+        self.draw_sidebar(f, side, snap);
+
+        let controls = "wasd/arrows move · f/space fire · e pickup · h heal · q quit";
+        f.render_widget(Paragraph::new(controls.dark_gray()).centered(), status);
+
+        if let Some(n) = snap.countdown {
+            let area = centered(f.area(), 30, 5);
+            f.render_widget(Clear, area);
+            let p = Paragraph::new(vec![
+                Line::raw(""),
+                Line::from(format!("dropping in {n}...").yellow().bold()),
+                Line::raw(""),
+            ])
+            .centered()
+            .block(Block::bordered());
+            f.render_widget(p, area);
+        } else if !snap.you.alive && !snap.over {
+            let place = snap
+                .you
+                .placement
+                .map(|p| format!("#{p}"))
+                .unwrap_or_default();
+            let area = Rect { x: inner.x, y: inner.y, width: inner.width, height: 1 };
+            let p = Paragraph::new(
+                format!(" ELIMINATED {place} — spectating your corpse · q to leave ")
+                    .red()
+                    .bold(),
+            )
+            .centered();
+            f.render_widget(p, area);
+        }
+    }
+
+    fn draw_sidebar(&self, f: &mut Frame, area: Rect, snap: &Snapshot) {
+        let you = &snap.you;
+        let mut lines: Vec<Line> = Vec::new();
+
+        lines.push(Line::from(vec![
+            "alive ".dark_gray(),
+            format!("{:<3}", snap.alive).white().bold(),
+            " kills ".dark_gray(),
+            format!("{}", you.kills).white().bold(),
+        ]));
+        lines.push(Line::raw(""));
+        lines.push(bar_line("HP ", you.hp, 100, hp_color(you.hp)));
+        lines.push(bar_line("ARM", you.armor, 100, Color::Cyan));
+        lines.push(Line::raw(""));
+
+        let stats = you.weapon.stats();
+        let ammo = if stats.ammo_cost == 0 {
+            "--".to_string()
+        } else {
+            format!("{}", you.ammo)
+        };
+        lines.push(Line::from(vec![
+            stats.name.to_string().magenta().bold(),
+            format!("  ammo {ammo}").into(),
+        ]));
+        let ready = if you.fire_cd == 0 { "ready".green() } else { "....".dark_gray() };
+        lines.push(Line::from(vec!["trigger ".dark_gray(), ready]));
+        lines.push(Line::from(vec![
+            format!("medkits {}", you.medkits).into(),
+            if you.heal_cd > 0 { "  (cooling)".dark_gray() } else { "  [h]".dark_gray() },
+        ]));
+        lines.push(Line::raw(""));
+
+        // Storm status.
+        let z = &snap.zone;
+        let inside = {
+            let dx = you.pos.0 as f32 + 0.5 - z.center.0;
+            let dy = you.pos.1 as f32 + 0.5 - z.center.1;
+            dx * dx + dy * dy <= z.radius * z.radius
+        };
+        if z.shrinking {
+            lines.push(Line::from(
+                format!("STORM CLOSING {}s", z.seconds_left).red().bold(),
+            ));
+        } else {
+            lines.push(Line::from(vec![
+                "storm holds ".dark_gray(),
+                format!("{}s", z.seconds_left).white(),
+            ]));
+        }
+        if !inside {
+            lines.push(Line::from(
+                format!("OUTSIDE ZONE -{}hp", z.damage).on_red().white().bold(),
+            ));
+            let dx = z.center.0 - you.pos.0 as f32;
+            let dy = z.center.1 - you.pos.1 as f32;
+            let arrow = if dx.abs() > dy.abs() {
+                if dx > 0.0 { "east ->" } else { "<- west" }
+            } else if dy > 0.0 {
+                "south v"
+            } else {
+                "north ^"
+            };
+            lines.push(Line::from(format!("safety: {arrow}").yellow()));
+        }
+        lines.push(Line::raw(""));
+
+        // Loot underfoot.
+        if let Some((_, item)) = snap.loot.iter().find(|(p, _)| *p == you.pos) {
+            lines.push(Line::from(vec![
+                "here: ".dark_gray(),
+                item.label().cyan().bold(),
+                " [e]".dark_gray(),
+            ]));
+            lines.push(Line::raw(""));
+        }
+
+        lines.push(Line::from("-- feed --".dark_gray()));
+        let used = lines.len();
+        let room = (area.height as usize).saturating_sub(used + 2);
+        for line in self.feed.iter().take(room) {
+            lines.push(Line::from(line.clone().dark_gray()));
+        }
+
+        let p = Paragraph::new(lines)
+            .wrap(Wrap { trim: true })
+            .block(Block::bordered().title(" status "));
+        f.render_widget(p, area);
+    }
+}
+
+fn connecting_lines() -> Vec<Line<'static>> {
+    vec![
+        Line::raw(""),
+        Line::from("reaching the host over iroh...".cyan()),
+        Line::from("(NAT holepunching can take a few seconds)".dark_gray()),
+        Line::raw(""),
+        Line::from("press q to give up".dark_gray()),
+    ]
+}
+
+const TITLE: &[&str] = &[
+    r"                _ _                        _      ",
+    r"  __ _ ___  ___(_|_)  _ __ ___  _   _  __ _| | ___ ",
+    r" / _` / __|/ __| | | | '__/ _ \| | | |/ _` | |/ _ \",
+    r"| (_| \__ \ (__| | | | | | (_) | |_| | (_| | |  __/",
+    r" \__,_|___/\___|_|_| |_|  \___/ \__, |\__,_|_|\___|",
+    r"                                |___/              ",
+];
+
+fn hp_color(hp: i32) -> Color {
+    match hp {
+        0..=25 => Color::Red,
+        26..=55 => Color::Yellow,
+        _ => Color::Green,
+    }
+}
+
+fn bar_line(label: &str, val: i32, max: i32, color: Color) -> Line<'static> {
+    let width = 14usize;
+    let filled = ((val.max(0) * width as i32) / max) as usize;
+    let bar: String = "#".repeat(filled.min(width)) + &"-".repeat(width - filled.min(width));
+    Line::from(vec![
+        format!("{label} ").dark_gray(),
+        Span::styled(bar, Style::new().fg(color)),
+        format!(" {val:>3}").into(),
+    ])
+}
+
+fn centered(area: Rect, w: u16, h: u16) -> Rect {
+    let w = w.min(area.width);
+    let h = h.min(area.height);
+    Rect {
+        x: area.x + (area.width - w) / 2,
+        y: area.y + (area.height - h) / 2,
+        width: w,
+        height: h,
+    }
+}
+
+fn tile_cell(tile: Tile) -> (char, Color) {
+    match tile {
+        Tile::Grass => ('.', Color::Green),
+        Tile::Tree => ('T', Color::LightGreen),
+        Tile::Water => ('~', Color::Blue),
+        Tile::Wall => ('#', Color::Gray),
+        Tile::Floor => (',', Color::DarkGray),
+        Tile::Road => (':', Color::DarkGray),
+    }
+}
+
+fn item_cell(item: ItemKind) -> (char, Color) {
+    match item {
+        ItemKind::Weapon(_) => (')', Color::Magenta),
+        ItemKind::Ammo(_) => ('=', Color::Yellow),
+        ItemKind::Medkit => ('+', Color::Red),
+        ItemKind::Vest => (']', Color::Cyan),
+    }
+}
+
+fn render_map(map: &Map, snap: &Snapshot, area: Rect, buf: &mut Buffer) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let (vw, vh) = (area.width as i32, area.height as i32);
+    let me = snap.you.pos;
+    let cam_x = (me.0 - vw / 2).clamp(0, (map.w - vw).max(0));
+    let cam_y = (me.1 - vh / 2).clamp(0, (map.h - vh).max(0));
+    let z = &snap.zone;
+
+    for sy in 0..vh {
+        for sx in 0..vw {
+            let (wx, wy) = (cam_x + sx, cam_y + sy);
+            let Some(cell) = buf.cell_mut((area.x + sx as u16, area.y + sy as u16)) else {
+                continue;
+            };
+            if wx >= map.w || wy >= map.h {
+                cell.set_char(' ');
+                continue;
+            }
+            let (mut ch, mut color) = tile_cell(map.get((wx, wy)));
+            let mut modifier = Modifier::DIM;
+
+            let dx = wx as f32 + 0.5 - z.center.0;
+            let dy = wy as f32 + 0.5 - z.center.1;
+            let outside = dx * dx + dy * dy > z.radius * z.radius;
+            if outside {
+                // The storm: everything washes blue.
+                color = Color::LightBlue;
+                ch = '%';
+            } else {
+                // Hint where the storm settles next.
+                let tdx = wx as f32 + 0.5 - z.target_center.0;
+                let tdy = wy as f32 + 0.5 - z.target_center.1;
+                let td = (tdx * tdx + tdy * tdy).sqrt();
+                if (td - z.target_radius).abs() < 0.6 {
+                    ch = 'o';
+                    color = Color::LightCyan;
+                }
+            }
+
+            buf_set(cell, ch, color, modifier);
+
+            // Entities draw over terrain (loot < bullets < players < you).
+            modifier = Modifier::BOLD;
+            let pos = (wx, wy);
+            if let Some((_, item)) = snap.loot.iter().find(|(p, _)| *p == pos) {
+                let (ch, color) = item_cell(*item);
+                buf_set(cell, ch, color, modifier);
+            }
+            if let Some((_, dir)) = snap.bullets.iter().find(|(p, _)| *p == pos) {
+                let ch = match dir {
+                    Dir::North | Dir::South => '|',
+                    Dir::East | Dir::West => '-',
+                };
+                buf_set(cell, ch, Color::Yellow, modifier);
+            }
+            if snap.players.iter().any(|p| p.pos == pos) {
+                buf_set(cell, '@', Color::Red, modifier);
+            }
+            if pos == me && snap.you.alive {
+                buf_set(cell, '@', Color::Yellow, modifier);
+            } else if pos == me {
+                buf_set(cell, 'x', Color::DarkGray, modifier);
+            }
+        }
+    }
+}
+
+fn buf_set(cell: &mut ratatui::buffer::Cell, ch: char, fg: Color, modifier: Modifier) {
+    cell.set_char(ch);
+    cell.set_style(Style::new().fg(fg).add_modifier(modifier));
+}

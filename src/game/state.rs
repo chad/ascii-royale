@@ -340,7 +340,7 @@ impl World {
                 self.zone.ticks_left / TPS
             ));
         }
-        if self.tick % STORM_PULSE_TICKS == 0 {
+        if self.tick.is_multiple_of(STORM_PULSE_TICKS) {
             let dmg = self.zone.damage();
             for i in 0..self.players.len() {
                 if self.players[i].alive && !self.zone.contains(self.players[i].pos) {
@@ -447,10 +447,6 @@ impl World {
         for (slot, item) in slots.into_iter().zip(drops) {
             self.loot.insert(slot, item);
         }
-    }
-
-    pub fn rng(&mut self) -> &mut StdRng {
-        &mut self.rng
     }
 
     /// Build the personalized, visibility-filtered view sent to one player.

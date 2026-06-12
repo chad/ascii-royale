@@ -115,6 +115,8 @@ impl Zone {
         self.ticks_left / TPS
     }
 
+    /// Exercised by tests; the sim itself just keeps applying final-phase damage.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn done(&self) -> bool {
         self.phase >= PHASES.len()
     }
