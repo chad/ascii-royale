@@ -7,6 +7,15 @@ Up to 16 combatants drop onto a procedurally generated ASCII island. Scavenge
 weapons, dodge bullets you can actually see coming, and outrun the storm.
 Last one standing wins. Bots fill empty slots, so it's playable solo too.
 
+![gameplay — a full bot match from drop to victory royale](assets/gameplay.gif)
+
+*An actual match (sped up ~2x): the drop and first loot, a mid-game scrap,
+and the finale as the storm swallows the island. Rendered headlessly through
+the real game code — see `examples/capture_gif.rs`.*
+
+<details>
+<summary>Static frame, for the full glyph detail</summary>
+
 ```text
 ┌ the island ────────────────────────────────────────────────────────────┐┌ status ────────────────┐
 │.........................................o........~~~~~~~~..........~~~~││alive 8   kills 2       │
@@ -43,6 +52,8 @@ Last one standing wins. Bots fill empty slots, so it's playable solo too.
 loot scattered through a building, the `o` ring marking where the storm
 settles next, and water/forest/road terrain. In your terminal it's all in
 color, with 8-bit sound.*
+
+</details>
 
 ## Features
 
@@ -211,7 +222,14 @@ cargo test                                          # sim, protocol, render, bin
 cargo test --test e2e -- --ignored                  # real two-peer match over iroh
 cargo test --lib preview -- --ignored --nocapture   # print rendered frames
 cargo test --lib audible_demo -- --ignored --nocapture  # hear every sound effect
+cargo run --example capture_gif                     # re-render assets/gameplay.gif
 ```
+
+The gameplay GIF is generated, not screen-recorded: `capture_gif` simulates a
+deterministic bot match twice with the same seed (pass one learns who wins,
+pass two records from the winner's POV), draws each tick through the real
+ratatui render path into a headless buffer, rasterizes cells with an 8×8
+bitmap font, and encodes a frame-differenced GIF.
 
 The simulation is fully headless: `full_bot_match_produces_a_winner` runs an
 entire 8-bot match to completion in milliseconds. See `DESIGN.md` for the

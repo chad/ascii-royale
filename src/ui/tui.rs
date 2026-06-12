@@ -367,19 +367,6 @@ impl App {
     fn draw_game(&self, f: &mut Frame) {
         let Some(snap) = &self.snap else { return };
         let Some(map) = &self.map else { return };
-
-        let [main, status] =
-            Layout::vertical([Constraint::Min(5), Constraint::Length(1)]).areas(f.area());
-        let [map_area, side] =
-            Layout::horizontal([Constraint::Min(20), Constraint::Length(26)]).areas(main);
-
-        let map_block = Block::bordered().title(" the island ");
-        let inner = map_block.inner(map_area);
-        f.render_widget(map_block, map_area);
-        render_map(map, snap, inner, f.buffer_mut());
-
-        self.draw_sidebar(f, side, snap);
-
         let b = &self.binds;
         let sound = if !self.sounds.available() {
             String::new()
@@ -398,7 +385,35 @@ impl App {
             b.keys_label(Action::Pickup),
             b.keys_label(Action::Heal),
         );
-        f.render_widget(Paragraph::new(controls.dark_gray()).centered(), status);
+        GameView { map, snap, feed: &self.feed, controls }.draw(f);
+    }
+}
+
+/// The in-match screen, decoupled from App so headless tools (the GIF
+/// capture example) can render gameplay without a terminal or network.
+pub struct GameView<'a> {
+    pub map: &'a Map,
+    pub snap: &'a Snapshot,
+    pub feed: &'a VecDeque<String>,
+    pub controls: String,
+}
+
+impl GameView<'_> {
+    pub fn draw(&self, f: &mut Frame) {
+        let (map, snap) = (self.map, self.snap);
+        let [main, status] =
+            Layout::vertical([Constraint::Min(5), Constraint::Length(1)]).areas(f.area());
+        let [map_area, side] =
+            Layout::horizontal([Constraint::Min(20), Constraint::Length(26)]).areas(main);
+
+        let map_block = Block::bordered().title(" the island ");
+        let inner = map_block.inner(map_area);
+        f.render_widget(map_block, map_area);
+        render_map(map, snap, inner, f.buffer_mut());
+
+        self.draw_sidebar(f, side, snap);
+
+        f.render_widget(Paragraph::new(self.controls.clone().dark_gray()).centered(), status);
 
         if let Some(n) = snap.countdown {
             let area = centered(f.area(), 30, 5);
@@ -429,6 +444,7 @@ impl App {
     }
 
     fn draw_sidebar(&self, f: &mut Frame, area: Rect, snap: &Snapshot) {
+        // (method of GameView; feed comes from the view, not the App)
         let you = &snap.you;
         let mut lines: Vec<Line> = Vec::new();
 

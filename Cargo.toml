@@ -19,3 +19,7 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"
 [profile.release]
 lto = true
 strip = true
+
+[dev-dependencies]
+font8x8 = "0.3.1"
+gif = "0.14.2"
