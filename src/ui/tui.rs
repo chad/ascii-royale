@@ -15,6 +15,7 @@ use crate::game::map::{Map, Tile};
 use crate::game::state::{InputCmd, Snapshot};
 use crate::game::Dir;
 use crate::net::protocol::{ClientMsg, ServerHandle, ServerMsg, Standing};
+use crate::ui::sound::Sounds;
 
 const FEED_LINES: usize = 64;
 
@@ -37,6 +38,7 @@ pub struct App {
     roster: Vec<String>,
     feed: VecDeque<String>,
     link_lost: bool,
+    sounds: Sounds,
 }
 
 /// Run the whole client UI on the calling thread; network tasks keep
@@ -53,6 +55,7 @@ pub fn run(handle: ServerHandle, ticket: Option<String>, is_host: bool) -> Resul
         roster: Vec::new(),
         feed: VecDeque::new(),
         link_lost: false,
+        sounds: Sounds::new(),
     };
     let mut terminal = ratatui::init();
     let result = app.main_loop(&mut terminal);
@@ -103,6 +106,7 @@ impl App {
                     self.feed.push_front(line.clone());
                 }
                 self.feed.truncate(FEED_LINES);
+                self.sounds.on_snapshot(self.snap.as_ref(), &snap);
                 self.snap = Some(*snap);
                 if matches!(self.screen, Screen::Lobby | Screen::Connecting) {
                     self.screen = Screen::Game;
@@ -117,6 +121,10 @@ impl App {
     fn on_key(&mut self, code: KeyCode, mods: KeyModifiers) -> bool {
         if code == KeyCode::Char('c') && mods.contains(KeyModifiers::CONTROL) {
             return true;
+        }
+        if code == KeyCode::Char('M') {
+            self.sounds.toggle_mute();
+            return false;
         }
         if self.link_lost {
             return matches!(code, KeyCode::Char('q') | KeyCode::Esc | KeyCode::Enter);
@@ -282,7 +290,16 @@ impl App {
 
         self.draw_sidebar(f, side, snap);
 
-        let controls = "wasd/arrows move+aim · f/space fire where you aim · e pickup · h heal · q quit";
+        let sound = if !self.sounds.available() {
+            ""
+        } else if self.sounds.muted {
+            " · M unmute"
+        } else {
+            " · M mute"
+        };
+        let controls = format!(
+            "wasd/arrows move+aim · f/space fire where you aim · e pickup · h heal{sound} · q quit"
+        );
         f.render_widget(Paragraph::new(controls.dark_gray()).centered(), status);
 
         if let Some(n) = snap.countdown {
@@ -641,6 +658,7 @@ pub(crate) mod tests {
             roster: Vec::new(),
             feed: VecDeque::new(),
             link_lost: false,
+            sounds: Sounds::disabled(),
         }
     }
 

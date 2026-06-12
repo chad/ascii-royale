@@ -58,6 +58,7 @@ ascii-royale solo --bots 9
 | `f` / space | fire — auto-aims at the nearest enemy lined up with you in any direction; otherwise shoots along your `^ v < >` crosshair. Pressing during cooldown fires the instant the weapon is ready. |
 | `e` / `g` | pick up the item under you |
 | `h` / `m` | use a medkit (+40 HP) |
+| `M` (shift-m) | mute / unmute sound |
 | Enter | start the match (host, in lobby) |
 | `q` / Esc | quit |
 
@@ -78,6 +79,19 @@ ascii-royale solo --bots 9
 - Weapons, roughly fists < pistol < shotgun < SMG < rifle < sniper. The
   sniper hits like a truck but fires once per 1.5s. Shotgun and sniper
   burn 2 ammo per shot.
+
+## Sound
+
+Retro 8-bit effects — gunshots per weapon, hits, pickups, heals, kills, the
+storm siren, nearby bullet impacts, death and victory stings — all synthesized
+square waves and noise, generated in code (no audio files). Derived entirely
+client-side from state changes, so multiplayer traffic carries no audio.
+Toggle with `M`; if there's no output device (SSH), the game silently runs
+without it.
+
+```sh
+cargo test --lib audible_demo -- --ignored --nocapture   # hear every effect
+```
 
 ## How it works
 
