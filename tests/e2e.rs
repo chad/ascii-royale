@@ -1,0 +1,83 @@
+//! End-to-end test over the real iroh stack: a remote client joins a hosted
+//! lobby, the match starts, snapshots flow both ways, and a disconnect
+//! resolves the match.
+//!
+//! Ignored by default because it needs the network (n0 discovery + relay).
+//! Run with: cargo test --test e2e -- --ignored
+
+use std::time::Duration;
+
+use ascii_royale::net::client;
+use ascii_royale::net::host::{self, HostOpts};
+use ascii_royale::net::protocol::{ClientMsg, ServerMsg};
+use tokio::time::timeout;
+
+async fn next_msg(handle: &mut ascii_royale::net::protocol::ServerHandle) -> ServerMsg {
+    timeout(Duration::from_secs(30), handle.rx.recv())
+        .await
+        .expect("timed out waiting for server message")
+        .expect("server channel closed")
+}
+
+#[tokio::test]
+#[ignore = "needs network access to n0 discovery/relay"]
+async fn remote_player_joins_plays_and_disconnects() {
+    let hosted = timeout(
+        Duration::from_secs(60),
+        host::start(HostOpts { name: "hostess".into(), bots: 0, networked: true }),
+    )
+    .await
+    .expect("endpoint bind timed out")
+    .expect("host start failed");
+    let mut host_handle = hosted.handle;
+    let ticket = hosted.ticket.expect("networked host must have a ticket");
+
+    // Host got its own Welcome.
+    let ServerMsg::Welcome { id: 0, .. } = next_msg(&mut host_handle).await else {
+        panic!("host should be player 0");
+    };
+
+    // Remote client dials by ticket.
+    let mut remote = timeout(Duration::from_secs(60), client::connect(&ticket, "wanderer"))
+        .await
+        .expect("connect timed out")
+        .expect("connect failed");
+    let ServerMsg::Welcome { id: remote_id, .. } = next_msg(&mut remote).await else {
+        panic!("remote should be welcomed");
+    };
+    assert_eq!(remote_id, 1);
+
+    // Both sides hear about the roster of two.
+    loop {
+        if let ServerMsg::Roster { names } = next_msg(&mut remote).await {
+            if names.len() == 2 {
+                break;
+            }
+        }
+    }
+
+    // Host starts the match; both sides should start receiving snapshots.
+    host_handle.tx.send(ClientMsg::Start).await.unwrap();
+    loop {
+        if let ServerMsg::Snapshot(s) = next_msg(&mut remote).await {
+            assert_eq!(s.alive, 2);
+            break;
+        }
+    }
+    // Remote can act without the host falling over.
+    remote.tx.send(ClientMsg::Input(ascii_royale::game::state::InputCmd::Fire)).await.unwrap();
+
+    // Remote rage-quits: host should win by forfeit and get the End screen.
+    drop(remote);
+    loop {
+        match next_msg(&mut host_handle).await {
+            ServerMsg::End { standings } => {
+                let winner = standings.iter().find(|s| s.placement == Some(1)).unwrap();
+                assert_eq!(winner.name, "hostess");
+                assert!(winner.is_you);
+                return;
+            }
+            _ => continue,
+        }
+    }
+}

@@ -546,3 +546,139 @@ fn buf_set(cell: &mut ratatui::buffer::Cell, ch: char, fg: Color, modifier: Modi
     cell.set_char(ch);
     cell.set_style(Style::new().fg(fg).add_modifier(modifier));
 }
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::*;
+    use crate::game::state::{MatchPhase, World};
+    use crate::game::GameConfig;
+    use ratatui::{backend::TestBackend, Terminal};
+
+    fn test_app() -> App {
+        let (_tx, rx) = tokio::sync::mpsc::channel(8);
+        let (tx, _rx) = tokio::sync::mpsc::channel(8);
+        App {
+            handle: ServerHandle { rx, tx },
+            screen: Screen::Connecting,
+            ticket: Some("abc123ticket".into()),
+            is_host: true,
+            map: None,
+            my_id: 0,
+            snap: None,
+            roster: Vec::new(),
+            feed: VecDeque::new(),
+            link_lost: false,
+        }
+    }
+
+    fn frame_text(app: &App) -> String {
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| app.draw(f)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let mut out = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                out.push_str(buf[(x, y)].symbol());
+            }
+            out.push('\n');
+        }
+        out
+    }
+
+    #[test]
+    fn lobby_screen_shows_ticket_and_roster() {
+        let mut app = test_app();
+        let world = World::new(11, GameConfig::default());
+        app.on_server_msg(ServerMsg::Welcome { id: 0, map: world.map, config: world.config });
+        app.on_server_msg(ServerMsg::Roster {
+            names: vec!["chad".into(), "wanderer".into()],
+        });
+        let text = frame_text(&app);
+        assert!(text.contains("abc123ticket"), "lobby should show the ticket");
+        assert!(text.contains("@ chad") && text.contains("@ wanderer"));
+        assert!(text.contains("[enter] drop in"));
+    }
+
+    #[test]
+    fn game_screen_renders_player_hud_and_feed() {
+        let mut app = test_app();
+        let mut world = World::new(11, GameConfig::default());
+        world.add_player("chad".into(), false);
+        for i in 0..5 {
+            world.add_player(format!("bot{i}"), true);
+        }
+        app.on_server_msg(ServerMsg::Welcome {
+            id: 0,
+            map: world.map.clone(),
+            config: world.config.clone(),
+        });
+        world.start_match();
+        while world.phase != MatchPhase::Active {
+            world.step();
+        }
+        for _ in 0..10 {
+            world.step();
+        }
+        let snap = world.snapshot_for(0, &["bot1 eliminated bot2 (SMG)".to_string()]);
+        app.on_server_msg(ServerMsg::Snapshot(Box::new(snap)));
+
+        let text = frame_text(&app);
+        assert!(text.contains('@'), "the player glyph should be on screen");
+        assert!(text.contains("HP"), "HUD should show HP bar");
+        assert!(text.contains("alive"), "HUD should show alive count");
+        assert!(text.contains("eliminated bot2"), "feed line should render");
+        assert!(text.contains("move"), "controls hint should render");
+    }
+
+    pub(super) fn print_midgame_frame() {
+        let mut app = test_app();
+        let mut world = World::new(7, GameConfig::default());
+        world.add_player("chad".into(), false);
+        for i in 0..7 {
+            world.add_player(format!("bot{i}"), true);
+        }
+        app.on_server_msg(ServerMsg::Welcome {
+            id: 0,
+            map: world.map.clone(),
+            config: world.config.clone(),
+        });
+        world.start_match();
+        while world.phase != MatchPhase::Active {
+            world.step();
+        }
+        for _ in 0..600 {
+            world.step();
+        }
+        let snap = world.snapshot_for(0, &["bot1 eliminated bot2 (SMG)".to_string()]);
+        app.on_server_msg(ServerMsg::Snapshot(Box::new(snap)));
+        println!("{}", frame_text(&app));
+    }
+
+    #[test]
+    fn results_screen_crowns_the_winner() {
+        let mut app = test_app();
+        app.on_server_msg(ServerMsg::End {
+            standings: vec![
+                Standing { name: "chad".into(), placement: Some(1), kills: 4, is_you: true },
+                Standing { name: "bot1".into(), placement: Some(2), kills: 2, is_you: false },
+            ],
+        });
+        let text = frame_text(&app);
+        assert!(text.contains("VICTORY ROYALE"));
+        assert!(text.contains("#1"));
+    }
+}
+
+#[cfg(test)]
+mod preview {
+    //! Not an assertion — prints a mid-match frame for eyeballing the layout.
+    //! cargo test --lib preview -- --ignored --nocapture
+    use super::tests as helpers;
+
+    #[test]
+    #[ignore = "visual aid, run with --nocapture to see a frame"]
+    fn print_game_frame() {
+        helpers::print_midgame_frame();
+    }
+}

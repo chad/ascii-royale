@@ -1,12 +1,10 @@
-mod game;
-mod net;
-mod ui;
-
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
-use net::host::{self, HostOpts};
-use net::protocol::ClientMsg;
+use ascii_royale::net::host::{self, HostOpts};
+use ascii_royale::net::protocol::ClientMsg;
+use ascii_royale::net::client;
+use ascii_royale::ui;
 
 #[derive(Parser)]
 #[command(name = "ascii-royale", version, about = "Terminal battle royale, peer-to-peer over iroh")]
@@ -57,11 +55,15 @@ fn main() -> Result<()> {
             let hosted =
                 rt.block_on(host::start(HostOpts { name, bots, networked: true }))?;
             let ticket = hosted.ticket.clone();
+            if let Some(t) = &ticket {
+                // Also goes to scrollback so it survives the TUI session.
+                eprintln!("ticket: {t}");
+            }
             ui::tui::run(hosted.handle, ticket, true)?;
         }
         Command::Join { ticket, name } => {
             eprintln!("dialing host...");
-            let handle = rt.block_on(net::client::connect(&ticket, &name))?;
+            let handle = rt.block_on(client::connect(&ticket, &name))?;
             ui::tui::run(handle, None, false)?;
         }
         Command::Solo { name, bots } => {
