@@ -7,6 +7,15 @@ Up to 16 combatants drop onto a procedurally generated ASCII island. Scavenge
 weapons, dodge bullets you can actually see coming, and outrun the storm.
 Last one standing wins. Bots fill empty slots, so it's playable solo too.
 
+**Play right now — nothing to install:**
+
+```sh
+ssh -p 22222 play@bore.pub
+```
+
+No password, no account: pick a call sign and you're in the lobby. The match
+starts ~20 s later (bots fill empty seats) and the arena loops forever.
+
 ![gameplay — a full bot match from drop to victory royale](assets/gameplay.gif)
 
 *An actual match (sped up ~2x): the drop and first loot, a mid-game scrap,
@@ -206,7 +215,13 @@ into the name prompt. `deploy/` has the complete recipe:
 - `royale-launcher` — forced command: pick a call sign, join, play again
 - `royale-arena.service` — systemd unit for the arena process
 - `sshd-play.conf` — guest user: no shell, no forwarding, empty password
+  (with OpenSSH this even skips the password prompt entirely)
 - `sshd-hardening.conf` — everything else stays key-only
+- `bore-tunnel.service` — public TCP ingress via [bore.pub](https://github.com/ekzhang/bore)
+  when your host (like the reference arena's VM) has no public port
+
+The reference arena lives on a [boxd](https://boxd.sh) VM behind a bore.pub
+tunnel — that's the `ssh -p 22222 play@bore.pub` at the top of this README.
 
 ## How it works
 

@@ -42,16 +42,17 @@ Status legend: [ ] todo · [x] done · [~] in progress
 - [x] Rebindable keys: `k` config screen, ~/.config/ascii-royale/keys.conf
 - [x] README with captured frames, LICENSE, published to GitHub
 
-## SSH arena (boxd VM `royale`) — BUILT, AWAITING PUBLIC INGRESS
+## SSH arena (boxd VM `royale`) — LIVE: ssh -p 22222 play@bore.pub
 - [x] `serve` mode + join queue + lifecycle (see above)
 - [x] VM created (royale, auto-suspend off), binary built & installed
-- [x] sshd on :2222 hardened; `play` guest (empty password, ForceCommand launcher)
+- [x] sshd on :2222 hardened; `play` guest (no password — none-auth works)
 - [x] royale-arena.service active, logs to /var/log/royale.log
-- [x] end-to-end verified: ssh play@localhost → launcher → iroh join → lobby
-- [ ] PUBLIC INGRESS UNRESOLVED (chad to decide): boxd has no raw-TCP proxy
-      (HTTPS-only edge; port-22 gateway is boxd's REPL; per-VM SSH port is
-      owner-key-only). Options: ask boxd for TCP ports / ngrok tcp / VPS front door.
+- [x] public ingress: bore-tunnel.service → bore.pub:22222 (boxd has no raw
+      TCP; bore.pub is a free community relay — swap to a boxd TCP port or
+      vanity domain later by replacing that one unit)
+- [x] verified from the public internet: keyless stranger → call sign → lobby
 - [ ] consider a cargo feature to build without rodio for headless servers
+- [ ] nicer long-term ingress: ask boxd for TCP ports (capability exists)
 
 ## Ideas for later (not started)
 - [ ] Spectate the killer instead of your corpse; match restart from results
