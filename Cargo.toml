@@ -11,7 +11,7 @@ clap = { version = "4", features = ["derive"] }
 iroh = "1.0.0-rc.1"
 postcard = { version = "1", features = ["alloc", "use-std"] }
 rand = "0.9"
-ratatui = "0.30"
+ratatui = { version = "0.30", default-features = false, features = ["crossterm", "layout-cache", "macros", "underline-color"] }
 serde = { version = "1", features = ["derive"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "signal"] }
 
