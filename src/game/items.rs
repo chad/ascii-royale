@@ -26,17 +26,19 @@ pub struct WeaponStats {
     /// Max bullet travel in cells.
     pub range: i32,
     pub ammo_cost: u16,
+    /// Ammo that comes with the weapon when picked up — guns spawn loaded.
+    pub bundled_ammo: u16,
 }
 
 impl WeaponKind {
     pub fn stats(self) -> WeaponStats {
         match self {
-            WeaponKind::Fists => WeaponStats { name: "Fists", damage: 10, cooldown: 3, speed: 0, range: 1, ammo_cost: 0 },
-            WeaponKind::Pistol => WeaponStats { name: "Pistol", damage: 15, cooldown: 4, speed: 3, range: 25, ammo_cost: 1 },
-            WeaponKind::Smg => WeaponStats { name: "SMG", damage: 8, cooldown: 1, speed: 3, range: 20, ammo_cost: 1 },
-            WeaponKind::Shotgun => WeaponStats { name: "Shotgun", damage: 30, cooldown: 8, speed: 2, range: 8, ammo_cost: 2 },
-            WeaponKind::Rifle => WeaponStats { name: "Rifle", damage: 22, cooldown: 5, speed: 4, range: 35, ammo_cost: 1 },
-            WeaponKind::Sniper => WeaponStats { name: "Sniper", damage: 70, cooldown: 15, speed: 6, range: 60, ammo_cost: 2 },
+            WeaponKind::Fists => WeaponStats { name: "Fists", damage: 10, cooldown: 3, speed: 0, range: 1, ammo_cost: 0, bundled_ammo: 0 },
+            WeaponKind::Pistol => WeaponStats { name: "Pistol", damage: 15, cooldown: 4, speed: 3, range: 25, ammo_cost: 1, bundled_ammo: 24 },
+            WeaponKind::Smg => WeaponStats { name: "SMG", damage: 8, cooldown: 1, speed: 3, range: 20, ammo_cost: 1, bundled_ammo: 30 },
+            WeaponKind::Shotgun => WeaponStats { name: "Shotgun", damage: 30, cooldown: 8, speed: 2, range: 8, ammo_cost: 2, bundled_ammo: 12 },
+            WeaponKind::Rifle => WeaponStats { name: "Rifle", damage: 22, cooldown: 5, speed: 4, range: 35, ammo_cost: 1, bundled_ammo: 20 },
+            WeaponKind::Sniper => WeaponStats { name: "Sniper", damage: 70, cooldown: 15, speed: 6, range: 60, ammo_cost: 2, bundled_ammo: 8 },
         }
     }
 

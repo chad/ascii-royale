@@ -54,8 +54,8 @@ ascii-royale solo --bots 9
 
 | key | action |
 |---|---|
-| `wasd` / arrows | move (you fire the way you last moved) |
-| `f` / space | fire |
+| `wasd` / arrows | move — this also sets your aim |
+| `f` / space | fire in the direction you're aiming (the `^ v < >` crosshair next to you) |
 | `e` / `g` | pick up the item under you |
 | `h` / `m` | use a medkit (+40 HP) |
 | Enter | start the match (host, in lobby) |
@@ -63,6 +63,10 @@ ascii-royale solo --bots 9
 
 ## How to win
 
+- **Get a gun first.** You spawn with fists. Buildings (`#` boxes) hold most
+  of the loot — walk onto a `)` and press `e`. Guns come loaded; ammo `=`
+  packs keep them fed. When you're unarmed the sidebar points at the
+  nearest gun on screen.
 - Bullets are real glyphs that travel cell by cell — sidestep them.
 - Walls `#` and trees `T` block shots; water `~` blocks you but not bullets.
 - Loot: `)` weapon · `=` ammo · `+` medkit · `]` vest (absorbs half of each hit).

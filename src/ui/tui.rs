@@ -282,7 +282,7 @@ impl App {
 
         self.draw_sidebar(f, side, snap);
 
-        let controls = "wasd/arrows move · f/space fire · e pickup · h heal · q quit";
+        let controls = "wasd/arrows move+aim · f/space fire where you aim · e pickup · h heal · q quit";
         f.render_widget(Paragraph::new(controls.dark_gray()).centered(), status);
 
         if let Some(n) = snap.countdown {
@@ -329,17 +329,56 @@ impl App {
         lines.push(Line::raw(""));
 
         let stats = you.weapon.stats();
+        let dry = stats.ammo_cost > 0 && you.ammo < stats.ammo_cost;
         let ammo = if stats.ammo_cost == 0 {
             "--".to_string()
         } else {
             format!("{}", you.ammo)
         };
+        let ammo_span = if dry { format!("  ammo {ammo}").red().bold() } else { format!("  ammo {ammo}").into() };
         lines.push(Line::from(vec![
             stats.name.to_string().magenta().bold(),
-            format!("  ammo {ammo}").into(),
+            ammo_span,
         ]));
+        if dry {
+            lines.push(Line::from("NO AMMO - grab = packs".on_red().white().bold()));
+        }
+        // Unarmed or dry: point at the nearest fix on screen.
+        let needs_gun = stats.ammo_cost == 0 && stats.speed == 0;
+        if needs_gun || dry {
+            let fix = snap
+                .loot
+                .iter()
+                .filter(|(_, item)| match item {
+                    ItemKind::Weapon(_) => needs_gun,
+                    ItemKind::Ammo(_) => dry,
+                    _ => false,
+                })
+                .min_by_key(|(p, _)| (p.0 - you.pos.0).abs() + (p.1 - you.pos.1).abs());
+            if let Some((p, item)) = fix {
+                let label = match item {
+                    ItemKind::Weapon(_) => "gun",
+                    _ => "ammo",
+                };
+                lines.push(Line::from(vec![
+                    format!("{label} nearby: ").dark_gray(),
+                    compass(you.pos, *p).cyan().bold(),
+                ]));
+            }
+        }
+        let aim = match you.dir {
+            Dir::North => "^",
+            Dir::South => "v",
+            Dir::East => ">",
+            Dir::West => "<",
+        };
         let ready = if you.fire_cd == 0 { "ready".green() } else { "....".dark_gray() };
-        lines.push(Line::from(vec!["trigger ".dark_gray(), ready]));
+        lines.push(Line::from(vec![
+            "trigger ".dark_gray(),
+            ready,
+            "  aim ".dark_gray(),
+            aim.yellow(),
+        ]));
         lines.push(Line::from(vec![
             format!("medkits {}", you.medkits).into(),
             if you.heal_cd > 0 { "  (cooling)".dark_gray() } else { "  [h]".dark_gray() },
@@ -422,6 +461,21 @@ const TITLE: &[&str] = &[
     r" \__,_|___/\___|_|_| |_|  \___/ \__, |\__,_|_|\___|",
     r"                                |___/              ",
 ];
+
+/// Coarse compass hint ("12 NE") from one cell to another.
+fn compass(from: (i32, i32), to: (i32, i32)) -> String {
+    let dx = to.0 - from.0;
+    let dy = to.1 - from.1;
+    let ns = if dy <= -2 { "N" } else if dy >= 2 { "S" } else { "" };
+    let ew = if dx <= -2 { "W" } else if dx >= 2 { "E" } else { "" };
+    let dir = format!("{ns}{ew}");
+    let dist = dx.abs().max(dy.abs());
+    if dir.is_empty() {
+        "right here (e)".to_string()
+    } else {
+        format!("{dist} {dir}")
+    }
+}
 
 fn hp_color(hp: i32) -> Color {
     match hp {
@@ -516,9 +570,19 @@ fn render_map(map: &Map, snap: &Snapshot, area: Rect, buf: &mut Buffer) {
 
             buf_set(cell, ch, color, modifier);
 
-            // Entities draw over terrain (loot < bullets < players < you).
+            // Entities draw over terrain (aim mark < loot < bullets < players < you).
             modifier = Modifier::BOLD;
             let pos = (wx, wy);
+            if snap.you.alive && pos == snap.you.dir.step(me) {
+                // Crosshair: the cell your next shot leaves through.
+                let ch = match snap.you.dir {
+                    Dir::North => '^',
+                    Dir::South => 'v',
+                    Dir::East => '>',
+                    Dir::West => '<',
+                };
+                buf_set(cell, ch, Color::Yellow, Modifier::DIM);
+            }
             if let Some((_, item)) = snap.loot.iter().find(|(p, _)| *p == pos) {
                 let (ch, color) = item_cell(*item);
                 buf_set(cell, ch, color, modifier);

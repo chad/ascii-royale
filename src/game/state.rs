@@ -258,6 +258,7 @@ impl World {
                         self.loot.insert(pos, ItemKind::Weapon(p.weapon));
                     }
                     p.weapon = w;
+                    p.ammo = (p.ammo + w.stats().bundled_ammo).min(MAX_AMMO);
                 }
                 ItemKind::Ammo(n) => p.ammo = (p.ammo + n).min(MAX_AMMO),
                 ItemKind::Medkit => {
@@ -571,6 +572,30 @@ mod tests {
         w.hit(Some(0), 1, 22, WeaponKind::Rifle);
         assert_eq!(w.players[1].hp, 100 - 11);
         assert_eq!(w.players[1].armor, 100 - 11);
+    }
+
+    #[test]
+    fn picking_up_a_gun_loads_it() {
+        let mut w = World::new(8, GameConfig::default());
+        w.add_player("a".into(), false);
+        w.start_match();
+        while w.phase != MatchPhase::Active {
+            w.step();
+        }
+        let pos = w.players[0].pos;
+        w.loot.insert(pos, ItemKind::Weapon(WeaponKind::Rifle));
+        w.queue_input(0, InputCmd::Pickup);
+        w.step();
+        let p = &w.players[0];
+        assert_eq!(p.weapon, WeaponKind::Rifle);
+        assert_eq!(p.ammo, WeaponKind::Rifle.stats().bundled_ammo, "guns must spawn loaded");
+        // And firing actually produces a bullet.
+        w.queue_input(0, InputCmd::Fire);
+        w.step();
+        assert!(
+            !w.bullets.is_empty() || w.players[0].ammo < WeaponKind::Rifle.stats().bundled_ammo,
+            "firing a loaded gun must spend ammo and spawn a bullet"
+        );
     }
 
     #[test]
