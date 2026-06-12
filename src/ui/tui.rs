@@ -587,10 +587,19 @@ fn render_map(map: &Map, snap: &Snapshot, area: Rect, buf: &mut Buffer) {
                 let (ch, color) = item_cell(*item);
                 buf_set(cell, ch, color, modifier);
             }
-            if let Some((_, dir)) = snap.bullets.iter().find(|(p, _)| *p == pos) {
-                let ch = match dir {
-                    Dir::North | Dir::South => '|',
-                    Dir::East | Dir::West => '-',
+            if let Some((_, dir, impact)) = snap
+                .bullets
+                .iter()
+                .filter(|(p, _, _)| *p == pos)
+                .max_by_key(|(_, _, impact)| *impact)
+            {
+                let ch = if *impact {
+                    '*'
+                } else {
+                    match dir {
+                        Dir::North | Dir::South => '|',
+                        Dir::East | Dir::West => '-',
+                    }
                 };
                 buf_set(cell, ch, Color::Yellow, modifier);
             }

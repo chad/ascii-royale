@@ -103,6 +103,9 @@ pub struct World {
     pub config: GameConfig,
     /// Human-readable feed lines produced this tick (kills, zone, win).
     pub feed: Vec<String>,
+    /// Every cell bullets crossed this tick (pos, dir, is_impact) — the
+    /// client draws these as tracers so fast bullets stay visible.
+    pub tracers: Vec<(Pos, Dir, bool)>,
     pub winner: Option<u8>,
     rng: StdRng,
 }
@@ -123,6 +126,7 @@ impl World {
             phase: MatchPhase::Lobby,
             config,
             feed: Vec::new(),
+            tracers: Vec::new(),
             winner: None,
             rng,
         }
@@ -214,6 +218,7 @@ impl World {
             MatchPhase::Active => {}
         }
         self.tick += 1;
+        self.tracers.clear();
 
         self.think_bots();
 
@@ -274,20 +279,27 @@ impl World {
 
         // Firing.
         for i in 0..self.players.len() {
-            if !self.players[i].alive || !std::mem::take(&mut self.players[i].want_fire) {
+            // Fire intent stays latched through cooldown: mashing the key
+            // during cooldown shoots the instant the weapon is ready.
+            if !self.players[i].alive || !self.players[i].want_fire {
                 continue;
             }
-            let (pos, dir, weapon) = {
-                let p = &self.players[i];
-                (p.pos, p.dir, p.weapon)
-            };
+            if self.players[i].fire_cd > 0 {
+                continue;
+            }
+            self.players[i].want_fire = false;
+            let (pos, weapon) = (self.players[i].pos, self.players[i].weapon);
             let stats = weapon.stats();
-            let p = &mut self.players[i];
-            if p.fire_cd > 0 || p.ammo < stats.ammo_cost {
+            if self.players[i].ammo < stats.ammo_cost {
                 continue;
             }
+            // Aim snap: shoot the nearest enemy we can actually hit in any
+            // cardinal direction; otherwise fire where we're facing.
+            let dir = self.snap_aim(i as u8, &stats).unwrap_or(self.players[i].dir);
+            let p = &mut self.players[i];
             p.ammo -= stats.ammo_cost;
             p.fire_cd = stats.cooldown;
+            p.dir = dir;
             if stats.speed == 0 {
                 // Melee: hit whoever is in the adjacent cell.
                 let target = dir.step(pos);
@@ -309,13 +321,18 @@ impl World {
             }
         }
 
-        // Bullet flight, cell by cell so nothing is skipped over.
+        // Bullet flight, cell by cell so nothing is skipped over. Every cell
+        // crossed becomes a tracer so the client can draw the full path.
         let mut bullets = std::mem::take(&mut self.bullets);
+        let mut tracers = std::mem::take(&mut self.tracers);
         bullets.retain_mut(|b| {
             for _ in 0..b.speed {
                 b.pos = b.dir.step(b.pos);
                 b.travel -= 1;
                 if !self.map.in_bounds(b.pos) || self.map.get(b.pos).blocks_shot() {
+                    if self.map.in_bounds(b.pos) {
+                        tracers.push((b.pos, b.dir, true));
+                    }
                     return false;
                 }
                 if let Some(v) = self
@@ -323,9 +340,11 @@ impl World {
                     .iter()
                     .position(|q| q.alive && q.id != b.owner && q.pos == b.pos)
                 {
+                    tracers.push((b.pos, b.dir, true));
                     self.hit(Some(b.owner), v as u8, b.damage, b.weapon);
                     return false;
                 }
+                tracers.push((b.pos, b.dir, false));
                 if b.travel <= 0 {
                     return false;
                 }
@@ -333,6 +352,7 @@ impl World {
             true
         });
         self.bullets = bullets;
+        self.tracers = tracers;
 
         // Storm.
         if self.zone.step(&mut self.rng) {
@@ -388,6 +408,42 @@ impl World {
             p.want_pickup |= action.pickup;
             p.want_heal |= action.heal;
         }
+    }
+
+    /// Pick the direction of the nearest enemy this player could hit right
+    /// now: cardinal-aligned, in range, with a clear line. None = no target.
+    fn snap_aim(&self, me: u8, stats: &super::items::WeaponStats) -> Option<Dir> {
+        let p = &self.players[me as usize];
+        let melee = stats.speed == 0;
+        self.players
+            .iter()
+            .filter(|q| q.alive && q.id != me)
+            .filter_map(|q| {
+                let dx = q.pos.0 - p.pos.0;
+                let dy = q.pos.1 - p.pos.1;
+                if dx != 0 && dy != 0 {
+                    return None;
+                }
+                let dist = dx.abs() + dy.abs();
+                if dist == 0 || dist > stats.range {
+                    return None;
+                }
+                if !melee && !self.map.clear_shot(p.pos, q.pos) {
+                    return None;
+                }
+                let dir = if dx > 0 {
+                    Dir::East
+                } else if dx < 0 {
+                    Dir::West
+                } else if dy > 0 {
+                    Dir::South
+                } else {
+                    Dir::North
+                };
+                Some((dist, dir))
+            })
+            .min_by_key(|(dist, _)| *dist)
+            .map(|(_, dir)| dir)
     }
 
     /// Apply weapon damage (armor absorbs half of each hit until it breaks).
@@ -479,10 +535,10 @@ impl World {
                 .map(|p| PlayerView { pos: p.pos, dir: p.dir, weapon: p.weapon })
                 .collect(),
             bullets: self
-                .bullets
+                .tracers
                 .iter()
-                .filter(|b| near(b.pos))
-                .map(|b| (b.pos, b.dir))
+                .filter(|(p, _, _)| near(*p))
+                .copied()
                 .collect(),
             loot: self
                 .loot
@@ -551,7 +607,8 @@ pub struct Snapshot {
     pub you: SelfView,
     pub alive: u8,
     pub players: Vec<PlayerView>,
-    pub bullets: Vec<(Pos, Dir)>,
+    /// Tracer cells: every cell a bullet crossed this tick (pos, dir, impact).
+    pub bullets: Vec<(Pos, Dir, bool)>,
     pub loot: Vec<(Pos, ItemKind)>,
     pub zone: ZoneView,
     pub feed: Vec<String>,
@@ -596,6 +653,96 @@ mod tests {
             !w.bullets.is_empty() || w.players[0].ammo < WeaponKind::Rifle.stats().bundled_ammo,
             "firing a loaded gun must spend ammo and spawn a bullet"
         );
+    }
+
+    /// Find a clear horizontal strip of grass to stage shooting tests on.
+    fn clear_strip(map: &Map, len: i32) -> (i32, i32) {
+        for y in 1..map.h - 1 {
+            let mut run = 0;
+            for x in 1..map.w - 1 {
+                if map.get((x, y)) == crate::game::map::Tile::Grass {
+                    run += 1;
+                    if run >= len {
+                        return (x - len + 1, y);
+                    }
+                } else {
+                    run = 0;
+                }
+            }
+        }
+        panic!("no clear strip on map");
+    }
+
+    #[test]
+    fn aim_snap_hits_aligned_enemy_even_facing_wrong_way() {
+        let mut w = World::new(21, GameConfig::default());
+        w.add_player("shooter".into(), false);
+        w.add_player("target".into(), false);
+        w.start_match();
+        while w.phase != MatchPhase::Active {
+            w.step();
+        }
+        let (x, y) = clear_strip(&w.map, 8);
+        w.players[0].pos = (x, y);
+        w.players[0].dir = Dir::North; // deliberately aiming away
+        w.players[0].weapon = WeaponKind::Rifle;
+        w.players[0].ammo = 10;
+        w.players[1].pos = (x + 5, y);
+
+        w.queue_input(0, InputCmd::Fire);
+        for _ in 0..4 {
+            w.step();
+        }
+        assert!(w.players[1].hp < 100, "snap aim should land the shot");
+        assert_eq!(w.players[0].dir, Dir::East, "shooter should turn toward the target");
+        assert!(!w.tracers.is_empty() || w.players[1].hp < 100);
+    }
+
+    #[test]
+    fn bullets_leave_tracers_every_cell() {
+        let mut w = World::new(22, GameConfig::default());
+        w.add_player("shooter".into(), false);
+        w.add_player("bystander".into(), false);
+        w.start_match();
+        while w.phase != MatchPhase::Active {
+            w.step();
+        }
+        let (x, y) = clear_strip(&w.map, 12);
+        w.players[0].pos = (x, y);
+        w.players[0].dir = Dir::East;
+        w.players[0].weapon = WeaponKind::Pistol; // speed 3
+        w.players[0].ammo = 5;
+        w.players[1].pos = (x + 11, y + 20); // bystander well out of the line
+
+        w.queue_input(0, InputCmd::Fire);
+        w.step();
+        let on_row: Vec<_> = w.tracers.iter().filter(|(p, _, _)| p.1 == y).collect();
+        assert!(on_row.len() >= 3, "pistol should leave a 3-cell tracer, got {on_row:?}");
+    }
+
+    #[test]
+    fn fire_intent_latches_through_cooldown() {
+        let mut w = World::new(23, GameConfig::default());
+        w.add_player("shooter".into(), false);
+        w.start_match();
+        while w.phase != MatchPhase::Active {
+            w.step();
+        }
+        let (x, y) = clear_strip(&w.map, 10);
+        w.players[0].pos = (x, y);
+        w.players[0].dir = Dir::East;
+        w.players[0].weapon = WeaponKind::Rifle; // cooldown 5
+        w.players[0].ammo = 10;
+
+        w.queue_input(0, InputCmd::Fire);
+        w.step(); // shot 1 leaves
+        assert_eq!(w.players[0].ammo, 9);
+        // Press again immediately: weapon is cooling, intent must not be lost.
+        w.queue_input(0, InputCmd::Fire);
+        for _ in 0..6 {
+            w.step();
+        }
+        assert_eq!(w.players[0].ammo, 8, "second press should fire once ready");
     }
 
     #[test]
