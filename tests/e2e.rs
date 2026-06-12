@@ -8,7 +8,7 @@
 use std::time::Duration;
 
 use ascii_royale::net::client;
-use ascii_royale::net::host::{self, HostOpts};
+use ascii_royale::net::host::{self, HostOpts, ServeOpts};
 use ascii_royale::net::protocol::{ClientMsg, ServerMsg};
 use tokio::time::timeout;
 
@@ -49,7 +49,7 @@ async fn remote_player_joins_plays_and_disconnects() {
 
     // Both sides hear about the roster of two.
     loop {
-        if let ServerMsg::Roster { names } = next_msg(&mut remote).await {
+        if let ServerMsg::Roster { names, .. } = next_msg(&mut remote).await {
             if names.len() == 2 {
                 break;
             }
@@ -78,6 +78,67 @@ async fn remote_player_joins_plays_and_disconnects() {
                 return;
             }
             _ => continue,
+        }
+    }
+}
+
+/// Arena lifecycle: auto-start with one human, mid-match joiners queue,
+/// and after the match the lobby reopens and the queued player is seated.
+#[tokio::test]
+#[ignore = "needs network access to n0 discovery/relay"]
+async fn arena_auto_starts_queues_and_resets() {
+    let ticket = timeout(
+        Duration::from_secs(60),
+        host::serve(ServeOpts {
+            bots: 1,
+            auto_start_secs: 1,
+            auto_reset_secs: 1,
+            ticket_file: None,
+        }),
+    )
+    .await
+    .expect("serve bind timed out")
+    .expect("serve failed");
+
+    // First player joins the empty arena.
+    let mut alice = client::connect(&ticket, "alice").await.expect("alice connect");
+    let ServerMsg::Welcome { .. } = next_msg(&mut alice).await else {
+        panic!("alice should be welcomed into the lobby");
+    };
+
+    // The arena counts down and starts on its own (1s + 3s countdown).
+    loop {
+        if let ServerMsg::Snapshot(s) = next_msg(&mut alice).await {
+            assert_eq!(s.alive, 2, "alice + one bot");
+            break;
+        }
+    }
+
+    // Bob arrives mid-match: he must be queued, not rejected.
+    let mut bob = client::connect(&ticket, "bob").await.expect("bob connect");
+    loop {
+        match next_msg(&mut bob).await {
+            ServerMsg::Waiting { .. } => break,
+            ServerMsg::Rejected { reason } => panic!("bob rejected: {reason}"),
+            _ => {}
+        }
+    }
+
+    // Alice rage-quits; the bot wins; the arena resets; bob gets seated.
+    drop(alice);
+    loop {
+        match next_msg(&mut bob).await {
+            ServerMsg::Welcome { .. } => break,
+            ServerMsg::Waiting { .. } | ServerMsg::Roster { .. } => {}
+            other => panic!("expected bob's Welcome after reset, got {other:?}"),
+        }
+    }
+    // And the new lobby counts down for him too.
+    loop {
+        match next_msg(&mut bob).await {
+            ServerMsg::Roster { starting_in: Some(_), .. } => break,
+            ServerMsg::Roster { .. } | ServerMsg::Waiting { .. } => {}
+            other => panic!("expected countdown roster, got {other:?}"),
         }
     }
 }

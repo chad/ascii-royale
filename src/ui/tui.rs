@@ -25,6 +25,8 @@ enum Screen {
     Lobby,
     Game,
     Results(Vec<Standing>),
+    /// Joined mid-match on an arena server; the lobby reopens afterwards.
+    Waiting { alive: u8 },
     Fatal(String),
 }
 
@@ -37,6 +39,7 @@ pub struct App {
     my_id: u8,
     snap: Option<Snapshot>,
     roster: Vec<String>,
+    starting_in: Option<u32>,
     feed: VecDeque<String>,
     link_lost: bool,
     sounds: Sounds,
@@ -62,6 +65,7 @@ pub fn run(handle: ServerHandle, ticket: Option<String>, is_host: bool) -> Resul
         my_id: 0,
         snap: None,
         roster: Vec::new(),
+        starting_in: None,
         feed: VecDeque::new(),
         link_lost: false,
         sounds: Sounds::new(),
@@ -107,11 +111,23 @@ impl App {
     fn on_server_msg(&mut self, msg: ServerMsg) {
         match msg {
             ServerMsg::Welcome { id, map, .. } => {
+                // A Welcome mid-session means a fresh match: reset everything.
                 self.my_id = id;
                 self.map = Some(map);
+                self.snap = None;
+                self.feed.clear();
+                self.starting_in = None;
                 self.screen = Screen::Lobby;
             }
-            ServerMsg::Roster { names } => self.roster = names,
+            ServerMsg::Roster { names, starting_in } => {
+                self.roster = names;
+                self.starting_in = starting_in;
+            }
+            ServerMsg::Waiting { alive } => {
+                if !matches!(self.screen, Screen::Game) {
+                    self.screen = Screen::Waiting { alive };
+                }
+            }
             ServerMsg::Snapshot(snap) => {
                 for line in &snap.feed {
                     self.feed.push_front(line.clone());
@@ -152,10 +168,21 @@ impl App {
             return matches!(code, KeyCode::Char('q') | KeyCode::Esc | KeyCode::Enter);
         }
         match &self.screen {
-            Screen::Fatal(_) | Screen::Results(_) => {
+            Screen::Fatal(_) => {
                 matches!(code, KeyCode::Char('q') | KeyCode::Esc | KeyCode::Enter)
             }
-            Screen::Connecting => matches!(code, KeyCode::Char('q') | KeyCode::Esc),
+            Screen::Results(_) => match code {
+                KeyCode::Char('q') | KeyCode::Esc => true,
+                KeyCode::Enter if self.is_host => {
+                    // Boss restarts: a fresh Welcome brings everyone back.
+                    let _ = self.handle.tx.try_send(ClientMsg::Start);
+                    false
+                }
+                _ => false,
+            },
+            Screen::Connecting | Screen::Waiting { .. } => {
+                matches!(code, KeyCode::Char('q') | KeyCode::Esc)
+            }
             Screen::Lobby => match code {
                 KeyCode::Char('q') | KeyCode::Esc => true,
                 KeyCode::Enter if self.is_host => {
@@ -219,6 +246,18 @@ impl App {
             Screen::Lobby => self.draw_lobby(f),
             Screen::Game => self.draw_game(f),
             Screen::Results(standings) => self.draw_results(f, standings),
+            Screen::Waiting { alive } => self.draw_center_box(
+                f,
+                "waiting",
+                vec![
+                    Line::raw(""),
+                    Line::from("a match is in progress".yellow().bold()),
+                    Line::from(format!("{alive} still standing")),
+                    Line::raw(""),
+                    Line::from("you're in line for the next island".dark_gray()),
+                    Line::from("q to leave".dark_gray()),
+                ],
+            ),
             Screen::Fatal(reason) => self.draw_center_box(
                 f,
                 "no dice",
@@ -313,7 +352,12 @@ impl App {
             lines.push(Line::from(format!("  @ {name}")));
         }
         lines.push(Line::raw(""));
-        if self.is_host {
+        if let Some(secs) = self.starting_in {
+            lines.push(Line::from(
+                format!("match starts in {secs}s — bots fill empty slots").green().bold(),
+            ));
+            lines.push(Line::from("[k] keys · [q] quit".dark_gray()));
+        } else if self.is_host {
             lines.push(Line::from(
                 "[enter] drop in (bots fill empty slots) · [k] keys · [q] quit".dark_gray(),
             ));
@@ -355,7 +399,14 @@ impl App {
             });
         }
         lines.push(Line::raw(""));
-        lines.push(Line::from("press q to exit".dark_gray()));
+        lines.push(Line::from(
+            if self.is_host {
+                "[enter] play again · [q] quit"
+            } else {
+                "next match starts shortly · [q] quit"
+            }
+            .dark_gray(),
+        ));
         let h = (lines.len() as u16 + 4).min(f.area().height);
         let area = centered(f.area(), 60, h);
         let p = Paragraph::new(lines)

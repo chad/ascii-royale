@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -7,7 +8,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::time::MissedTickBehavior;
 
 use crate::game::state::{MatchPhase, World};
-use crate::game::GameConfig;
+use crate::game::{GameConfig, TPS};
 
 use super::protocol::{recv_frame, send_frame, ClientMsg, ServerHandle, ServerMsg, Standing, ALPN};
 
@@ -16,16 +17,41 @@ const BOT_NAMES: &[&str] = &[
     "Bolt", "Socket", "Gauge", "Piston", "Sprocket",
 ];
 
-/// Everything the game loop hears from the outside world.
+/// Everything the game loop hears from the outside world. Connections are
+/// identified by a stable `conn` slot, decoupled from player ids so the
+/// same connection can play many matches in a row.
 enum Inbound {
     Join { name: String, reply: oneshot::Sender<JoinReply> },
-    Msg { id: u8, msg: ClientMsg },
-    Disconnected { id: u8 },
+    Msg { conn: usize, msg: ClientMsg },
+    Disconnected { conn: usize },
 }
 
 enum JoinReply {
-    Accepted { id: u8, welcome: ServerMsg, rx: mpsc::Receiver<ServerMsg> },
+    /// `welcome` is None when the joiner is queued for the next match.
+    Accepted { conn: usize, welcome: Option<ServerMsg>, rx: mpsc::Receiver<ServerMsg> },
     Rejected { reason: String },
+}
+
+/// A connected human (the departed leave a None slot behind).
+struct Client {
+    name: String,
+    tx: mpsc::Sender<ServerMsg>,
+    /// Player id in the current world; None while queued for the next match.
+    player: Option<u8>,
+}
+
+/// How the match lifecycle is driven.
+struct LoopOpts {
+    bots: u8,
+    /// Conn 0 is a local boss whose Start messages control the lifecycle
+    /// (interactive host / solo). False for the headless arena.
+    local_boss: bool,
+    /// Arena mode: start automatically this long after a human is in the lobby.
+    auto_start_secs: Option<u32>,
+    /// Arena mode: return to the lobby this long after a match ends.
+    auto_reset_secs: Option<u32>,
+    /// Log lifecycle events to stdout (only safe without a TUI).
+    log: bool,
 }
 
 pub struct HostOpts {
@@ -41,20 +67,14 @@ pub struct Hosted {
     pub ticket: Option<String>,
 }
 
-/// Boot a match: spawn the authoritative game loop, optionally start
-/// listening on iroh, and join the host's own player through the same
-/// path remote players use.
+/// Boot an interactive match: spawn the authoritative game loop, optionally
+/// listen on iroh, and join the host's own player through the same path
+/// remote players use.
 pub async fn start(opts: HostOpts) -> Result<Hosted> {
     let (inbound_tx, inbound_rx) = mpsc::channel::<Inbound>(256);
 
     let ticket = if opts.networked {
-        let endpoint = Endpoint::builder(presets::N0)
-            .alpns(vec![ALPN.to_vec()])
-            .bind()
-            .await
-            .context("binding iroh endpoint")?;
-        // Wait until we're reachable (relay + discovery published).
-        endpoint.online().await;
+        let endpoint = bind_endpoint().await?;
         let ticket = endpoint.id().to_string();
         tokio::spawn(accept_loop(endpoint, inbound_tx.clone()));
         Some(ticket)
@@ -62,8 +82,16 @@ pub async fn start(opts: HostOpts) -> Result<Hosted> {
         None
     };
 
-    let seed = rand::random::<u64>();
-    tokio::spawn(game_loop(seed, opts.bots, inbound_rx));
+    tokio::spawn(game_loop(
+        LoopOpts {
+            bots: opts.bots,
+            local_boss: true,
+            auto_start_secs: None,
+            auto_reset_secs: None,
+            log: false,
+        },
+        inbound_rx,
+    ));
 
     // The host's player joins like anyone else, minus the network.
     let (reply_tx, reply_rx) = oneshot::channel();
@@ -72,17 +100,18 @@ pub async fn start(opts: HostOpts) -> Result<Hosted> {
         .await
         .ok()
         .context("game loop gone")?;
-    let JoinReply::Accepted { id: _, welcome, rx } = reply_rx.await? else {
+    let JoinReply::Accepted { conn, welcome, rx } = reply_rx.await? else {
         anyhow::bail!("host player rejected by own lobby");
     };
 
     // Feed the Welcome through the same channel the loop will use later.
     let (ui_tx, ui_rx) = mpsc::channel::<ServerMsg>(64);
-    ui_tx.send(welcome).await.ok();
+    if let Some(welcome) = welcome {
+        ui_tx.send(welcome).await.ok();
+    }
     let (cmd_tx, mut cmd_rx) = mpsc::channel::<ClientMsg>(64);
     let pump_in = inbound_tx.clone();
     tokio::spawn(async move {
-        // host's local client is always player 0
         let mut rx = rx;
         loop {
             tokio::select! {
@@ -91,7 +120,7 @@ pub async fn start(opts: HostOpts) -> Result<Hosted> {
                     None => break,
                 },
                 c = cmd_rx.recv() => match c {
-                    Some(c) => { let _ = pump_in.send(Inbound::Msg { id: 0, msg: c }).await; }
+                    Some(c) => { let _ = pump_in.send(Inbound::Msg { conn, msg: c }).await; }
                     None => break,
                 },
             }
@@ -101,20 +130,59 @@ pub async fn start(opts: HostOpts) -> Result<Hosted> {
     Ok(Hosted { handle: ServerHandle { rx: ui_rx, tx: cmd_tx }, ticket })
 }
 
+pub struct ServeOpts {
+    pub bots: u8,
+    pub auto_start_secs: u32,
+    pub auto_reset_secs: u32,
+    pub ticket_file: Option<PathBuf>,
+}
+
+/// Headless arena: no local player, matches start when humans show up and
+/// the lobby reopens after every match. Returns the ticket once listening;
+/// the arena then runs until the process exits.
+pub async fn serve(opts: ServeOpts) -> Result<String> {
+    let (inbound_tx, inbound_rx) = mpsc::channel::<Inbound>(256);
+    let endpoint = bind_endpoint().await?;
+    let ticket = endpoint.id().to_string();
+    if let Some(path) = &opts.ticket_file {
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir).ok();
+        }
+        std::fs::write(path, &ticket).context("writing ticket file")?;
+    }
+    tokio::spawn(accept_loop(endpoint, inbound_tx));
+    tokio::spawn(game_loop(
+        LoopOpts {
+            bots: opts.bots,
+            local_boss: false,
+            auto_start_secs: Some(opts.auto_start_secs),
+            auto_reset_secs: Some(opts.auto_reset_secs),
+            log: true,
+        },
+        inbound_rx,
+    ));
+    Ok(ticket)
+}
+
+async fn bind_endpoint() -> Result<Endpoint> {
+    let endpoint = Endpoint::builder(presets::N0)
+        .alpns(vec![ALPN.to_vec()])
+        .bind()
+        .await
+        .context("binding iroh endpoint")?;
+    // Wait until we're reachable (relay + discovery published).
+    endpoint.online().await;
+    Ok(endpoint)
+}
+
 async fn accept_loop(endpoint: Endpoint, inbound: mpsc::Sender<Inbound>) {
     while let Some(incoming) = endpoint.accept().await {
         let inbound = inbound.clone();
         tokio::spawn(async move {
-            if let Err(e) = handle_conn(incoming, inbound).await {
-                tracing_lite(&format!("connection ended: {e:#}"));
-            }
+            let _ = handle_conn(incoming, inbound).await;
         });
     }
 }
-
-// No logging stack in a TUI app; keep a stub so errors aren't silently eaten
-// if we ever want to wire this to a debug file.
-fn tracing_lite(_msg: &str) {}
 
 async fn handle_conn(
     incoming: iroh::endpoint::Incoming,
@@ -134,10 +202,12 @@ async fn handle_conn(
 
     let (reply_tx, reply_rx) = oneshot::channel();
     inbound.send(Inbound::Join { name, reply: reply_tx }).await.ok().context("loop gone")?;
-    let (id, mut out_rx) = match reply_rx.await? {
-        JoinReply::Accepted { id, welcome, rx } => {
-            send_frame(&mut send, &welcome).await?;
-            (id, rx)
+    let (conn_id, mut out_rx) = match reply_rx.await? {
+        JoinReply::Accepted { conn, welcome, rx } => {
+            if let Some(welcome) = welcome {
+                send_frame(&mut send, &welcome).await?;
+            }
+            (conn, rx)
         }
         JoinReply::Rejected { reason } => {
             send_frame(&mut send, &ServerMsg::Rejected { reason }).await?;
@@ -157,11 +227,11 @@ async fn handle_conn(
 
     // Reader: peer -> game loop. Runs on this task until the peer drops.
     while let Ok(msg) = recv_frame::<ClientMsg>(&mut recv).await {
-        if inbound.send(Inbound::Msg { id, msg }).await.is_err() {
+        if inbound.send(Inbound::Msg { conn: conn_id, msg }).await.is_err() {
             break;
         }
     }
-    let _ = inbound.send(Inbound::Disconnected { id }).await;
+    let _ = inbound.send(Inbound::Disconnected { conn: conn_id }).await;
     writer.abort();
     Ok(())
 }
@@ -176,12 +246,14 @@ fn sanitize_name(raw: &str) -> String {
     }
 }
 
-async fn game_loop(seed: u64, bots: u8, mut inbound: mpsc::Receiver<Inbound>) {
+async fn game_loop(opts: LoopOpts, mut inbound: mpsc::Receiver<Inbound>) {
     let config = GameConfig::default();
-    let mut world = World::new(seed, config.clone());
-    // Outboxes indexed by player id; None for bots and the departed.
-    let mut outboxes: Vec<Option<mpsc::Sender<ServerMsg>>> = Vec::new();
-    let mut ended = false;
+    let mut world = World::new(rand::random(), config.clone());
+    let mut clients: Vec<Option<Client>> = Vec::new();
+    let mut standings_sent = false;
+    // Tick countdowns driving the arena lifecycle.
+    let mut start_in: Option<u32> = None;
+    let mut reset_in: Option<u32> = None;
 
     let mut ticker = tokio::time::interval(Duration::from_millis(config.tick_ms));
     ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
@@ -192,99 +264,233 @@ async fn game_loop(seed: u64, bots: u8, mut inbound: mpsc::Receiver<Inbound>) {
                 let Some(ev) = ev else { return };
                 match ev {
                     Inbound::Join { name, reply } => {
-                        let unique = unique_name(&world, name);
-                        match world.add_player(unique, false) {
-                            Some(id) => {
-                                let (tx, rx) = mpsc::channel::<ServerMsg>(64);
-                                outboxes.push(Some(tx));
-                                debug_assert_eq!(outboxes.len() - 1, id as usize);
-                                let welcome = ServerMsg::Welcome {
-                                    id,
-                                    map: world.map.clone(),
-                                    config: config.clone(),
-                                };
-                                let _ = reply.send(JoinReply::Accepted { id, welcome, rx });
-                                broadcast_roster(&world, &outboxes);
-                            }
-                            None => {
-                                let reason = if world.phase == MatchPhase::Lobby {
-                                    "lobby is full".to_string()
-                                } else {
-                                    "match already started".to_string()
-                                };
-                                let _ = reply.send(JoinReply::Rejected { reason });
-                            }
+                        if clients.iter().flatten().count() >= config.max_players as usize {
+                            let _ = reply.send(JoinReply::Rejected {
+                                reason: "the arena is full — try again soon".into(),
+                            });
+                            continue;
+                        }
+                        let (tx, rx) = mpsc::channel::<ServerMsg>(64);
+                        let player = if world.phase == MatchPhase::Lobby {
+                            world.add_player(unique_name(&world, name.clone()), false)
+                        } else {
+                            None // mid-match: queue for the next one
+                        };
+                        if world.phase == MatchPhase::Lobby && player.is_none() {
+                            let _ = reply.send(JoinReply::Rejected {
+                                reason: "lobby is full".into(),
+                            });
+                            continue;
+                        }
+                        let welcome = player.map(|id| ServerMsg::Welcome {
+                            id,
+                            map: world.map.clone(),
+                            config: config.clone(),
+                        });
+                        let conn = clients.iter().position(Option::is_none).unwrap_or_else(|| {
+                            clients.push(None);
+                            clients.len() - 1
+                        });
+                        let queued = player.is_none();
+                        clients[conn] = Some(Client { name: name.clone(), tx, player });
+                        let _ = reply.send(JoinReply::Accepted { conn, welcome, rx });
+                        if queued {
+                            send_to(&clients, conn, ServerMsg::Waiting {
+                                alive: world.alive_count(),
+                            });
+                        } else {
+                            broadcast_roster(&world, &clients, start_in);
+                        }
+                        if opts.log {
+                            let humans = clients.iter().flatten().count();
+                            println!("[join] {name} ({humans} connected, queued: {queued})");
                         }
                     }
-                    Inbound::Msg { id, msg } => match msg {
-                        ClientMsg::Input(cmd) => world.queue_input(id, cmd),
-                        ClientMsg::Start => {
-                            if id == 0 && world.phase == MatchPhase::Lobby {
-                                for i in 0..bots {
-                                    let name = BOT_NAMES
-                                        .get(i as usize)
-                                        .map(|s| s.to_string())
-                                        .unwrap_or_else(|| format!("bot-{i}"));
-                                    if world.add_player(name, true).is_some() {
-                                        outboxes.push(None);
-                                    }
+                    Inbound::Msg { conn, msg } => {
+                        let player = clients.get(conn).and_then(|c| c.as_ref()).and_then(|c| c.player);
+                        match msg {
+                            ClientMsg::Input(cmd) => {
+                                if let Some(pid) = player {
+                                    world.queue_input(pid, cmd);
                                 }
-                                broadcast_roster(&world, &outboxes);
-                                world.start_match();
                             }
+                            ClientMsg::Start if opts.local_boss && conn == 0 => {
+                                if world.phase == MatchPhase::Lobby {
+                                    start_match(&mut world, &mut clients, opts.bots, start_in);
+                                } else if world.phase == MatchPhase::Over {
+                                    reset_to_lobby(
+                                        &mut world, &mut clients, &config,
+                                        &mut standings_sent, &mut start_in, &mut reset_in,
+                                        opts.log,
+                                    );
+                                }
+                            }
+                            _ => {}
                         }
-                        ClientMsg::Hello { .. } => {}
-                    },
-                    Inbound::Disconnected { id } => {
-                        world.player_disconnected(id);
-                        if let Some(slot) = outboxes.get_mut(id as usize) {
-                            *slot = None;
-                        }
-                        if world.phase == MatchPhase::Lobby {
-                            broadcast_roster(&world, &outboxes);
+                    }
+                    Inbound::Disconnected { conn } => {
+                        if let Some(client) = clients.get_mut(conn).and_then(Option::take) {
+                            if let Some(pid) = client.player {
+                                world.player_disconnected(pid);
+                            }
+                            if opts.log {
+                                println!("[left] {}", client.name);
+                            }
+                            if world.phase == MatchPhase::Lobby {
+                                broadcast_roster(&world, &clients, start_in);
+                            }
                         }
                     }
                 }
             }
             _ = ticker.tick() => {
                 if world.phase == MatchPhase::Lobby {
+                    // Arena: count down to auto-start while humans are present.
+                    let Some(secs) = opts.auto_start_secs else { continue };
+                    let humans = clients.iter().flatten().filter(|c| c.player.is_some()).count();
+                    if humans == 0 {
+                        if start_in.take().is_some() {
+                            broadcast_roster(&world, &clients, None);
+                        }
+                        continue;
+                    }
+                    let t = *start_in.get_or_insert(secs * TPS);
+                    if t == 0 {
+                        start_match(&mut world, &mut clients, opts.bots, start_in);
+                        start_in = None;
+                    } else {
+                        if t.is_multiple_of(TPS) {
+                            broadcast_roster(&world, &clients, Some(t / TPS));
+                        }
+                        start_in = Some(t - 1);
+                    }
                     continue;
                 }
+
                 world.step();
                 let feed = std::mem::take(&mut world.feed);
-                for (id, outbox) in outboxes.iter().enumerate() {
-                    let Some(tx) = outbox else { continue };
-                    let snap = world.snapshot_for(id as u8, &feed);
-                    // Drop frames on a congested link rather than stalling the match.
-                    let _ = tx.try_send(ServerMsg::Snapshot(Box::new(snap)));
-                }
-                if world.phase == MatchPhase::Over && !ended {
-                    ended = true;
-                    let mut standings: Vec<(u8, Standing)> = world
-                        .players
-                        .iter()
-                        .map(|p| {
-                            (p.id, Standing {
-                                name: p.name.clone(),
-                                placement: p.placement,
-                                kills: p.kills,
-                                is_you: false,
-                            })
-                        })
-                        .collect();
-                    standings.sort_by_key(|(_, s)| s.placement.unwrap_or(u8::MAX));
-                    for (id, outbox) in outboxes.iter().enumerate() {
-                        let Some(tx) = outbox else { continue };
-                        let mut rows: Vec<Standing> =
-                            standings.iter().map(|(_, s)| s.clone()).collect();
-                        for (row, (pid, _)) in rows.iter_mut().zip(&standings) {
-                            row.is_you = *pid == id as u8;
+                for client in clients.iter().flatten() {
+                    match client.player {
+                        Some(pid) => {
+                            let snap = world.snapshot_for(pid, &feed);
+                            // Drop frames on a congested link, don't stall the match.
+                            let _ = client.tx.try_send(ServerMsg::Snapshot(Box::new(snap)));
                         }
-                        let _ = tx.try_send(ServerMsg::End { standings: rows });
+                        None => {
+                            if world.tick.is_multiple_of(TPS as u64 * 2) {
+                                let _ = client.tx.try_send(ServerMsg::Waiting {
+                                    alive: world.alive_count(),
+                                });
+                            }
+                        }
+                    }
+                }
+
+                if world.phase == MatchPhase::Over {
+                    if !standings_sent {
+                        standings_sent = true;
+                        send_standings(&world, &clients);
+                        reset_in = opts.auto_reset_secs.map(|s| s * TPS);
+                        if opts.log {
+                            let winner = world
+                                .winner
+                                .map(|id| world.players[id as usize].name.clone())
+                                .unwrap_or_else(|| "nobody".into());
+                            println!("[over] {winner} won ({} players)", world.players.len());
+                        }
+                    }
+                    if let Some(t) = reset_in {
+                        if t == 0 {
+                            reset_to_lobby(
+                                &mut world, &mut clients, &config,
+                                &mut standings_sent, &mut start_in, &mut reset_in,
+                                opts.log,
+                            );
+                        } else {
+                            reset_in = Some(t - 1);
+                        }
                     }
                 }
             }
         }
+    }
+}
+
+/// Fill remaining slots with bots and launch the countdown.
+fn start_match(world: &mut World, clients: &mut [Option<Client>], bots: u8, start_in: Option<u32>) {
+    for i in 0..bots {
+        let base = BOT_NAMES
+            .get(i as usize)
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| format!("bot-{i}"));
+        let name = unique_name(world, base);
+        if world.add_player(name, true).is_none() {
+            break;
+        }
+    }
+    broadcast_roster(world, clients, start_in);
+    world.start_match();
+}
+
+/// Fresh island, same connections: everyone (including the queued) is
+/// re-added in slot order and gets a new Welcome.
+fn reset_to_lobby(
+    world: &mut World,
+    clients: &mut [Option<Client>],
+    config: &GameConfig,
+    standings_sent: &mut bool,
+    start_in: &mut Option<u32>,
+    reset_in: &mut Option<u32>,
+    log: bool,
+) {
+    *world = World::new(rand::random(), config.clone());
+    *standings_sent = false;
+    *start_in = None;
+    *reset_in = None;
+    for client in clients.iter_mut().flatten() {
+        let name = unique_name(world, client.name.clone());
+        client.player = world.add_player(name, false);
+        if let Some(id) = client.player {
+            let _ = client.tx.try_send(ServerMsg::Welcome {
+                id,
+                map: world.map.clone(),
+                config: config.clone(),
+            });
+        }
+    }
+    broadcast_roster(world, clients, None);
+    if log {
+        println!("[lobby] fresh island, {} back in", clients.iter().flatten().count());
+    }
+}
+
+fn send_standings(world: &World, clients: &[Option<Client>]) {
+    let mut standings: Vec<(u8, Standing)> = world
+        .players
+        .iter()
+        .map(|p| {
+            (p.id, Standing {
+                name: p.name.clone(),
+                placement: p.placement,
+                kills: p.kills,
+                is_you: false,
+            })
+        })
+        .collect();
+    standings.sort_by_key(|(_, s)| s.placement.unwrap_or(u8::MAX));
+    for client in clients.iter().flatten() {
+        let Some(pid) = client.player else { continue };
+        let mut rows: Vec<Standing> = standings.iter().map(|(_, s)| s.clone()).collect();
+        for (row, (id, _)) in rows.iter_mut().zip(&standings) {
+            row.is_you = *id == pid;
+        }
+        let _ = client.tx.try_send(ServerMsg::End { standings: rows });
+    }
+}
+
+fn send_to(clients: &[Option<Client>], conn: usize, msg: ServerMsg) {
+    if let Some(client) = clients.get(conn).and_then(|c| c.as_ref()) {
+        let _ = client.tx.try_send(msg);
     }
 }
 
@@ -301,14 +507,20 @@ fn unique_name(world: &World, base: String) -> String {
     base
 }
 
-fn broadcast_roster(world: &World, outboxes: &[Option<mpsc::Sender<ServerMsg>>]) {
+fn broadcast_roster(world: &World, clients: &[Option<Client>], start_in: Option<u32>) {
     let names: Vec<String> = world
         .players
         .iter()
         .filter(|p| p.connected || p.is_bot)
         .map(|p| if p.is_bot { format!("{} [bot]", p.name) } else { p.name.clone() })
         .collect();
-    for outbox in outboxes.iter().flatten() {
-        let _ = outbox.try_send(ServerMsg::Roster { names: names.clone() });
+    let starting_in = start_in.map(|t| t / TPS);
+    for client in clients.iter().flatten() {
+        if client.player.is_some() {
+            let _ = client.tx.try_send(ServerMsg::Roster {
+                names: names.clone(),
+                starting_in,
+            });
+        }
     }
 }

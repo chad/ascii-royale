@@ -37,6 +37,21 @@ enum Command {
         #[arg(long, default_value_t = 9)]
         bots: u8,
     },
+    /// Run a headless arena: no local player, matches start automatically
+    /// when humans join and the lobby reopens after every match.
+    Serve {
+        #[arg(long, default_value_t = 7)]
+        bots: u8,
+        /// Seconds the lobby waits (with at least one human) before starting.
+        #[arg(long, default_value_t = 20)]
+        auto_start_secs: u32,
+        /// Seconds the results screen lingers before a fresh lobby.
+        #[arg(long, default_value_t = 12)]
+        auto_reset_secs: u32,
+        /// Write the join ticket here for launcher scripts to read.
+        #[arg(long)]
+        ticket_file: Option<std::path::PathBuf>,
+    },
 }
 
 fn default_name() -> String {
@@ -70,6 +85,21 @@ fn main() -> Result<()> {
             let hosted =
                 rt.block_on(host::start(HostOpts { name, bots, networked: false }))?;
             ui::tui::run(hosted.handle, None, true)?;
+        }
+        Command::Serve { bots, auto_start_secs, auto_reset_secs, ticket_file } => {
+            return rt.block_on(async {
+                let ticket = host::serve(host::ServeOpts {
+                    bots,
+                    auto_start_secs,
+                    auto_reset_secs,
+                    ticket_file,
+                })
+                .await?;
+                println!("[arena] ticket: {ticket}");
+                println!("[arena] join with: ascii-royale join {ticket}");
+                tokio::signal::ctrl_c().await?;
+                Ok(())
+            });
         }
     }
 

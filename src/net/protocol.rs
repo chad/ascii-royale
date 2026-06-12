@@ -32,9 +32,11 @@ pub struct Standing {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ServerMsg {
     Welcome { id: u8, map: Map, config: GameConfig },
-    Roster { names: Vec<String> },
+    Roster { names: Vec<String>, starting_in: Option<u32> },
     Snapshot(Box<Snapshot>),
     End { standings: Vec<Standing> },
+    /// You arrived mid-match: hang tight, the lobby reopens after this one.
+    Waiting { alive: u8 },
     Rejected { reason: String },
 }
 
