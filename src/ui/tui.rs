@@ -821,6 +821,7 @@ pub(crate) mod tests {
             my_id: 0,
             snap: None,
             roster: Vec::new(),
+            starting_in: None,
             feed: VecDeque::new(),
             link_lost: false,
             sounds: Sounds::disabled(),
@@ -851,6 +852,7 @@ pub(crate) mod tests {
         app.on_server_msg(ServerMsg::Welcome { id: 0, map: world.map, config: world.config });
         app.on_server_msg(ServerMsg::Roster {
             names: vec!["chad".into(), "wanderer".into()],
+            starting_in: None,
         });
         let text = frame_text(&app);
         assert!(text.contains("abc123ticket"), "lobby should show the ticket");
@@ -936,6 +938,7 @@ pub(crate) mod tests {
         app.on_server_msg(ServerMsg::Welcome { id: 0, map: world.map, config: world.config });
         app.on_server_msg(ServerMsg::Roster {
             names: vec!["chad".into(), "wanderer".into(), "kex".into()],
+            starting_in: None,
         });
         println!("{}", frame_text(&app));
     }
@@ -944,7 +947,7 @@ pub(crate) mod tests {
         let mut app = test_app();
         let world = World::new(11, GameConfig::default());
         app.on_server_msg(ServerMsg::Welcome { id: 0, map: world.map, config: world.config });
-        app.on_server_msg(ServerMsg::Roster { names: vec!["chad".into()] });
+        app.on_server_msg(ServerMsg::Roster { names: vec!["chad".into()], starting_in: None });
         app.on_key(KeyCode::Char('k'), KeyModifiers::NONE);
         app.on_key(KeyCode::Down, KeyModifiers::NONE);
         println!("{}", frame_text(&app));
