@@ -42,6 +42,17 @@ Status legend: [ ] todo · [x] done · [~] in progress
 - [x] Rebindable keys: `k` config screen, ~/.config/ascii-royale/keys.conf
 - [x] README with captured frames, LICENSE, published to GitHub
 
+## SSH arena (boxd VM `royale`) — BUILT, AWAITING PUBLIC INGRESS
+- [x] `serve` mode + join queue + lifecycle (see above)
+- [x] VM created (royale, auto-suspend off), binary built & installed
+- [x] sshd on :2222 hardened; `play` guest (empty password, ForceCommand launcher)
+- [x] royale-arena.service active, logs to /var/log/royale.log
+- [x] end-to-end verified: ssh play@localhost → launcher → iroh join → lobby
+- [ ] PUBLIC INGRESS UNRESOLVED (chad to decide): boxd has no raw-TCP proxy
+      (HTTPS-only edge; port-22 gateway is boxd's REPL; per-VM SSH port is
+      owner-key-only). Options: ask boxd for TCP ports / ngrok tcp / VPS front door.
+- [ ] consider a cargo feature to build without rodio for headless servers
+
 ## Ideas for later (not started)
 - [ ] Spectate the killer instead of your corpse; match restart from results
 - [ ] Shotgun spread / diagonal aiming; throwables; airdrops

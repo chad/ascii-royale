@@ -188,6 +188,26 @@ you can also edit by hand (`fire = j space`). `r` resets the defaults.
 - Dying drops all your gear where you fall. Placement is decided the moment
   you die.
 
+## Run an arena (zero-install play over SSH)
+
+`ascii-royale serve` runs a headless arena: no local player, the match
+auto-starts ~20 s after the first human enters the lobby, bots fill the
+seats, and the lobby reopens after every match. Players arriving mid-match
+are queued for the next island, and the join ticket lands in a file:
+
+```sh
+ascii-royale serve --bots 7 --ticket-file /run/royale/ticket
+```
+
+Pair it with a locked-down SSH guest account and anyone with a terminal can
+play with **zero installation** — `ssh play@your-arena` drops them straight
+into the name prompt. `deploy/` has the complete recipe:
+
+- `royale-launcher` — forced command: pick a call sign, join, play again
+- `royale-arena.service` — systemd unit for the arena process
+- `sshd-play.conf` — guest user: no shell, no forwarding, empty password
+- `sshd-hardening.conf` — everything else stays key-only
+
 ## How it works
 
 ```text
