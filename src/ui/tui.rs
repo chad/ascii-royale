@@ -86,6 +86,94 @@ pub fn run(handle: ServerHandle, ticket: Option<String>, is_host: bool) -> Resul
     result
 }
 
+/// Live lobby browser: shows hosts discovered over gossip and returns the
+/// chosen game ticket (or None if the user backs out). `a` auto-joins the
+/// best open game.
+pub fn browse(listings: crate::net::lobby::Listings) -> Result<Option<String>> {
+    use crate::net::lobby;
+    let mut terminal = ratatui::init();
+    let mut selected = 0usize;
+    let chosen = loop {
+        let rows = lobby::snapshot(&listings);
+        selected = selected.min(rows.len().saturating_sub(1));
+        terminal.draw(|f| draw_browse(f, &rows, selected))?;
+        if event::poll(Duration::from_millis(250))? {
+            if let Event::Key(key) = event::read()? {
+                if key.kind != KeyEventKind::Press && key.kind != KeyEventKind::Repeat {
+                    continue;
+                }
+                match key.code {
+                    KeyCode::Char('q') | KeyCode::Esc => break None,
+                    KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        break None
+                    }
+                    KeyCode::Up | KeyCode::Char('w') | KeyCode::Char('k') => {
+                        selected = selected.saturating_sub(1)
+                    }
+                    KeyCode::Down | KeyCode::Char('s') | KeyCode::Char('j') => {
+                        if !rows.is_empty() {
+                            selected = (selected + 1).min(rows.len() - 1);
+                        }
+                    }
+                    KeyCode::Enter => {
+                        if let Some(l) = rows.get(selected) {
+                            break Some(l.beacon.ticket.clone());
+                        }
+                    }
+                    KeyCode::Char('a') => {
+                        // Auto-join: snapshot is sorted best-first, so take the
+                        // first joinable game.
+                        if let Some(l) = rows.iter().find(|l| l.joinable()).or(rows.first()) {
+                            break Some(l.beacon.ticket.clone());
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    };
+    ratatui::restore();
+    Ok(chosen)
+}
+
+fn draw_browse(f: &mut Frame, rows: &[crate::net::lobby::Listing], selected: usize) {
+    let mut lines: Vec<Line> = Vec::new();
+    for row in TITLE {
+        lines.push(Line::from((*row).yellow().bold()));
+    }
+    lines.push(Line::raw(""));
+    lines.push(Line::from("open games on the lobby".bold()));
+    lines.push(Line::raw(""));
+    if rows.is_empty() {
+        lines.push(Line::from("  searching the gossip network…".dark_gray()));
+        lines.push(Line::from("  (hosts appear here within a few seconds)".dark_gray()));
+    }
+    for (i, l) in rows.iter().enumerate() {
+        let b = &l.beacon;
+        let marker = if i == selected { "> " } else { "  " };
+        let status = match b.phase.as_str() {
+            "boarding" => "boarding".green(),
+            "countdown" => format!("drops in {}s", b.starting_in.unwrap_or(0)).green(),
+            "live" => "in progress".red(),
+            _ => b.phase.clone().dark_gray(),
+        };
+        let head = format!("{marker}{:<14} {:>2}/{:<2} ", b.name, b.aboard, b.seats);
+        let head = if i == selected { head.yellow().bold() } else { head.into() };
+        lines.push(Line::from(vec![head, status]));
+    }
+    lines.push(Line::raw(""));
+    lines.push(Line::from(
+        "↑↓ select · enter join · a auto-join best · q quit".dark_gray(),
+    ));
+    let h = (lines.len() as u16 + 4).min(f.area().height);
+    let area = centered(f.area(), 64, h);
+    f.render_widget(Clear, area);
+    let p = Paragraph::new(lines)
+        .centered()
+        .block(Block::bordered().title(" ascii-royale · lobby browser "));
+    f.render_widget(p, area);
+}
+
 impl App {
     fn main_loop(&mut self, terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
         loop {
@@ -1040,6 +1128,51 @@ pub(crate) mod tests {
         let text = frame_text(&app);
         assert!(text.contains("VICTORY ROYALE"));
         assert!(text.contains("#1"));
+    }
+
+    #[test]
+    fn browse_screen_lists_games_with_status() {
+        use crate::net::lobby::{Beacon, Listing};
+        use std::time::Instant;
+        let rows = vec![
+            Listing {
+                beacon: Beacon {
+                    ticket: "t1".into(),
+                    name: "arena".into(),
+                    aboard: 4,
+                    seats: 16,
+                    phase: "countdown".into(),
+                    starting_in: Some(8),
+                },
+                last_seen: Instant::now(),
+            },
+            Listing {
+                beacon: Beacon {
+                    ticket: "t2".into(),
+                    name: "chads-game".into(),
+                    aboard: 9,
+                    seats: 16,
+                    phase: "live".into(),
+                    starting_in: None,
+                },
+                last_seen: Instant::now(),
+            },
+        ];
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw_browse(f, &rows, 0)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let mut text = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                text.push_str(buf[(x, y)].symbol());
+            }
+        }
+        assert!(text.contains("arena"));
+        assert!(text.contains("chads-game"));
+        assert!(text.contains("drops in 8s"));
+        assert!(text.contains("in progress"));
+        assert!(text.contains("auto-join"));
     }
 }
 

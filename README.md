@@ -101,8 +101,14 @@ the live leaderboard). Pick a call sign and you're in the dropship.
 **From the terminal — one command, no ticket:**
 
 ```sh
-ascii-royale play
+ascii-royale play       # drop straight into the public arena
+ascii-royale browse     # or browse all open games and pick one
 ```
+
+`browse` shows a live, decentralized list of open games discovered over an
+iroh-gossip topic (hosts advertise themselves; no central match registry) —
+arrow-keys to pick, or `a` to auto-join the best open one. Host your own
+discoverable game with `ascii-royale host --announce`.
 
 It fetches the live arena ticket over HTTP and joins peer-to-peer. You land in
 the **dropship**: a countdown that shortens as more humans board, bots filling

@@ -81,6 +81,8 @@ pub struct HostOpts {
     pub bots: u8,
     /// When false (solo mode) no iroh endpoint is created at all.
     pub networked: bool,
+    /// Some(bootstrap gossip id) to advertise this game on the public lobby.
+    pub announce: Option<String>,
 }
 
 pub struct Hosted {
@@ -104,6 +106,35 @@ pub async fn start(opts: HostOpts) -> Result<Hosted> {
         None
     };
 
+    // Shared state powers an optional lobby announcement for this host.
+    let state = Arc::new(Mutex::new(ArenaState::new(None)));
+    if let (Some(boot_str), Some(ticket)) = (&opts.announce, &ticket) {
+        match boot_str.trim().parse() {
+            Ok(boot) => {
+                let ticket_c = ticket.clone();
+                let name = opts.name.clone();
+                let state_c = state.clone();
+                let seats = GameConfig::default().max_players;
+                if let Err(e) = super::lobby::spawn_announce(Some(boot), move || {
+                    let g = state_c.lock().unwrap();
+                    super::lobby::Beacon {
+                        ticket: ticket_c.clone(),
+                        name: name.clone(),
+                        aboard: g.aboard,
+                        seats,
+                        phase: g.phase.to_string(),
+                        starting_in: g.starting_in,
+                    }
+                })
+                .await
+                {
+                    eprintln!("could not announce on the lobby: {e:#}");
+                }
+            }
+            Err(_) => eprintln!("bad lobby bootstrap id; not announcing"),
+        }
+    }
+
     tokio::spawn(game_loop(
         LoopOpts {
             bots: opts.bots,
@@ -111,7 +142,7 @@ pub async fn start(opts: HostOpts) -> Result<Hosted> {
             auto_start_secs: None,
             auto_reset_secs: None,
             log: false,
-            state: None,
+            state: Some(state),
         },
         inbound_rx,
     ));
@@ -166,6 +197,8 @@ pub struct ServeOpts {
     pub stats_file: Option<PathBuf>,
     /// "Play in your browser" link shown on the landing page (e.g. a ttyd URL).
     pub browser_play_url: Option<String>,
+    /// Announce this arena on the gossip lobby topic (it's the bootstrap seed).
+    pub announce: bool,
 }
 
 /// Headless arena: no local player, matches start when humans show up and
@@ -182,14 +215,46 @@ pub async fn serve(opts: ServeOpts) -> Result<String> {
         std::fs::write(path, &ticket).context("writing ticket file")?;
     }
     let state = Arc::new(Mutex::new(ArenaState::new(opts.stats_file)));
+    let seats = GameConfig::default().max_players;
+
+    // Announce on the gossip lobby topic — the arena is the bootstrap seed.
+    let lobby_id = if opts.announce {
+        let ticket_c = ticket.clone();
+        let state_c = state.clone();
+        match super::lobby::spawn_announce(None, move || {
+            let g = state_c.lock().unwrap();
+            super::lobby::Beacon {
+                ticket: ticket_c.clone(),
+                name: "ascii-royale arena".into(),
+                aboard: g.aboard,
+                seats,
+                phase: g.phase.to_string(),
+                starting_in: g.starting_in,
+            }
+        })
+        .await
+        {
+            Ok(id) => {
+                println!("[lobby] announcing on gossip; bootstrap id {id}");
+                Some(id)
+            }
+            Err(e) => {
+                println!("[lobby] announce disabled: {e:#}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     if let Some(port) = opts.http_port {
-        let seats = GameConfig::default().max_players;
         tokio::spawn(super::web::serve(
             port,
             ticket.clone(),
             seats,
             state.clone(),
             opts.browser_play_url,
+            lobby_id,
         ));
     }
     tokio::spawn(accept_loop(endpoint, inbound_tx));
@@ -420,8 +485,12 @@ async fn game_loop(opts: LoopOpts, mut inbound: mpsc::Receiver<Inbound>) {
             }
             _ = ticker.tick() => {
                 if world.phase == MatchPhase::Lobby {
-                    // Arena: the dropship clock runs while humans are aboard.
-                    let Some(base) = opts.auto_start_secs else { continue };
+                    // Host mode (no auto-start): just keep the announced beacon's
+                    // aboard count fresh while we wait for the boss to start.
+                    let Some(base) = opts.auto_start_secs else {
+                        push_status(&opts.state, "boarding", lobby_humans(&clients) as u8, 0, None);
+                        continue;
+                    };
                     let humans = lobby_humans(&clients);
                     if humans == 0 {
                         if start_in.take().is_some() {

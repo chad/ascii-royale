@@ -1,6 +1,7 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
+use ascii_royale::net;
 use ascii_royale::net::client;
 use ascii_royale::net::host::{self, HostOpts};
 use ascii_royale::ui;
@@ -22,6 +23,9 @@ enum Command {
         /// Bots added when the match starts.
         #[arg(long, default_value_t = 7)]
         bots: u8,
+        /// Advertise this game on the public lobby so `browse` can find it.
+        #[arg(long)]
+        announce: bool,
     },
     /// Join a hosted match by ticket.
     Join {
@@ -38,6 +42,15 @@ enum Command {
         /// Arena ticket URL (or a raw ticket). Defaults to the public arena.
         #[arg(long, default_value_t = DEFAULT_ARENA.to_string())]
         arena: String,
+    },
+    /// Browse open games on the gossip lobby and join one — fully decentralized
+    /// discovery, no ticket sharing.
+    Browse {
+        #[arg(long, default_value_t = default_name())]
+        name: String,
+        /// Bootstrap id URL (or a raw gossip id). Defaults to the public arena.
+        #[arg(long, default_value_t = DEFAULT_LOBBY.to_string())]
+        bootstrap: String,
     },
     /// Play offline against bots.
     Solo {
@@ -75,6 +88,8 @@ enum Command {
 /// The public arena's ticket endpoint (boxd HTTPS proxy → the arena's HTTP
 /// ticket server). `play` GETs this, then joins over iroh.
 const DEFAULT_ARENA: &str = "https://royale.boxd.sh/ticket";
+/// The public arena's gossip bootstrap id endpoint.
+const DEFAULT_LOBBY: &str = "https://royale.boxd.sh/lobby";
 
 fn default_name() -> String {
     std::env::var("USER").unwrap_or_else(|_| "player".into())
@@ -106,10 +121,20 @@ fn main() -> Result<()> {
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
 
     match cli.command {
-        Command::Host { name, bots } => {
+        Command::Host { name, bots, announce } => {
             eprintln!("binding iroh endpoint (waiting to be reachable)...");
-            let hosted =
-                rt.block_on(host::start(HostOpts { name, bots, networked: true }))?;
+            let announce = if announce {
+                eprintln!("fetching lobby bootstrap...");
+                Some(resolve_ticket(DEFAULT_LOBBY)?)
+            } else {
+                None
+            };
+            let hosted = rt.block_on(host::start(HostOpts {
+                name,
+                bots,
+                networked: true,
+                announce,
+            }))?;
             let ticket = hosted.ticket.clone();
             if let Some(t) = &ticket {
                 // Also goes to scrollback so it survives the TUI session.
@@ -129,10 +154,26 @@ fn main() -> Result<()> {
             let handle = rt.block_on(client::connect(&ticket, &name))?;
             ui::tui::run(handle, None, false)?;
         }
+        Command::Browse { name, bootstrap } => {
+            eprintln!("finding the lobby...");
+            let boot = resolve_ticket(&bootstrap)?;
+            let boot_id = boot.trim().parse().ok();
+            let listings = rt.block_on(net::lobby::discover(boot_id))?;
+            // Browse + pick happens in the TUI; it returns a chosen ticket.
+            if let Some(ticket) = ui::tui::browse(listings)? {
+                eprintln!("dropping in...");
+                let handle = rt.block_on(client::connect(&ticket, &name))?;
+                ui::tui::run(handle, None, false)?;
+            }
+        }
         Command::Solo { name, bots } => {
             // Solo goes through the lobby too: that's where key config lives.
-            let hosted =
-                rt.block_on(host::start(HostOpts { name, bots, networked: false }))?;
+            let hosted = rt.block_on(host::start(HostOpts {
+                name,
+                bots,
+                networked: false,
+                announce: None,
+            }))?;
             ui::tui::run(hosted.handle, None, true)?;
         }
         Command::Serve {
@@ -153,6 +194,7 @@ fn main() -> Result<()> {
                     http_port,
                     stats_file,
                     browser_play_url,
+                    announce: true,
                 })
                 .await?;
                 println!("[arena] ticket: {ticket}");

@@ -180,10 +180,14 @@ name = "ascii-royale"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "blake3",
+ "bytes",
  "clap",
  "font8x8",
+ "futures-lite",
  "gif",
  "iroh",
+ "iroh-gossip",
  "postcard",
  "rand 0.9.4",
  "ratatui",
@@ -384,6 +388,9 @@ name = "bytes"
 version = "1.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1e748733b7cbc798e1434b6ac524f0c1ff2ab456fe201501e6497c8417a4fc33"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "castaway"
@@ -905,7 +912,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ccc2776f0c61eca1ca32528f85548abd1a4be8fb53d1b21c013e4f18da1e7090"
 dependencies = [
  "data-encoding",
- "syn 2.0.117",
+ "syn 1.0.109",
 ]
 
 [[package]]
@@ -1194,6 +1201,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0ce7134b9999ecaf8bcd65542e436736ef32ddca1b3e06094cb6ec5755203b80"
 
 [[package]]
+name = "fixedbitset"
+version = "0.5.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1d674e81391d1e1ab681a28d99df07927c6d4aa5b027d7da16ba32d1d21ecd99"
+
+[[package]]
 name = "flate2"
 version = "1.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1272,6 +1285,19 @@ checksum = "07bbe89c50d7a535e539b8c17bc0b49bdb77747034daa8087407d655f3f7cc1d"
 dependencies = [
  "futures-core",
  "futures-sink",
+]
+
+[[package]]
+name = "futures-concurrency"
+version = "7.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "175cd8cca9e1d45b87f18ffa75088f2099e3c4fe5e2f83e42de112560bea8ea6"
+dependencies = [
+ "fixedbitset 0.5.7",
+ "futures-core",
+ "futures-lite",
+ "pin-project",
+ "smallvec",
 ]
 
 [[package]]
@@ -2054,6 +2080,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "iroh-gossip"
+version = "0.100.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2f5cada641f84a2ff3d1acbd43e16490cf3b2a4f675e580c5c2caa5d68ee63b5"
+dependencies = [
+ "blake3",
+ "bytes",
+ "constant_time_eq",
+ "data-encoding",
+ "derive_more",
+ "ed25519-dalek",
+ "futures-concurrency",
+ "hex",
+ "indexmap",
+ "iroh",
+ "iroh-base",
+ "iroh-metrics",
+ "irpc",
+ "n0-error",
+ "n0-future",
+ "postcard",
+ "rand 0.10.1",
+ "serde",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
 name = "iroh-metrics"
 version = "1.0.0-rc.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2124,6 +2179,33 @@ dependencies = [
  "vergen-gitcl",
  "webpki-roots",
  "ws_stream_wasm",
+]
+
+[[package]]
+name = "irpc"
+version = "0.16.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a05799eb70acd04843c327ef939233ccf80f607d30e9ca94857ac7f3d8f18b46"
+dependencies = [
+ "futures-util",
+ "irpc-derive",
+ "n0-error",
+ "n0-future",
+ "serde",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
+name = "irpc-derive"
+version = "0.16.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "445d81dbc1eed4dab6379bf7f97d12ac28ce8e6f3f7d6660c9f333b7b5d8d03b"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
 ]
 
 [[package]]
@@ -2449,6 +2531,7 @@ version = "1.0.0-rc.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "223e946a84aa91644507a6b7865cfebbb9a231ace499041c747ab0fd30408212"
 dependencies = [
+ "anyhow",
  "n0-error-macros",
  "spez",
 ]
@@ -4261,7 +4344,7 @@ dependencies = [
  "fancy-regex",
  "filedescriptor",
  "finl_unicode",
- "fixedbitset",
+ "fixedbitset 0.4.2",
  "hex",
  "lazy_static",
  "libc",
@@ -4342,9 +4425,9 @@ dependencies = [
 
 [[package]]
 name = "time"
-version = "0.3.48"
+version = "0.3.49"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fc1aa89044e7786ffb2ec017acb22cb7de5b0be46d0f21aea2b224b8561e5db2"
+checksum = "711a53c2d47bbd818258c498c8dbfe186a2526c631495cfe7e078567f86b8469"
 dependencies = [
  "deranged",
  "js-sys",
@@ -4365,9 +4448,9 @@ checksum = "9e1c906769ad99c88eaa54e728060edef082f8e358ff32030cb7c7d315e81109"
 
 [[package]]
 name = "time-macros"
-version = "0.2.28"
+version = "0.2.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9d3bfe86347f0cc659f586f01e26303ccd32418f26f30c7b0309b3ca3a07d695"
+checksum = "71c652a3727a9cbb9a02f707f530b618ce00d0ccd762009c8c23bd191df3c17d"
 dependencies = [
  "num-conv",
  "time-core",

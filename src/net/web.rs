@@ -183,7 +183,9 @@ pub async fn serve(
     seats: u8,
     state: Arc<Mutex<ArenaState>>,
     browser_play_url: Option<String>,
+    lobby_id: Option<String>,
 ) {
+    let lobby_id = Arc::new(lobby_id.unwrap_or_default());
     let listener = match tokio::net::TcpListener::bind(("0.0.0.0", port)).await {
         Ok(l) => l,
         Err(e) => {
@@ -198,6 +200,7 @@ pub async fn serve(
         let state = state.clone();
         let ticket = ticket.clone();
         let page = page.clone();
+        let lobby_id = lobby_id.clone();
         tokio::spawn(async move {
             let mut buf = [0u8; 2048];
             let n = sock.read(&mut buf).await.unwrap_or(0);
@@ -218,6 +221,7 @@ pub async fn serve(
             }
             let (ctype, body) = match path {
                 "/ticket" => ("text/plain; charset=utf-8", format!("{ticket}\n")),
+                "/lobby" => ("text/plain; charset=utf-8", format!("{}\n", *lobby_id)),
                 "/stats" => {
                     let json = {
                         let st = state.lock().unwrap();
@@ -228,7 +232,7 @@ pub async fn serve(
                 "/" | "/index.html" => ("text/html; charset=utf-8", (*page).clone()),
                 _ => ("text/plain; charset=utf-8", "not found\n".into()),
             };
-            let status = if path == "/" || path == "/index.html" || path == "/ticket" || path == "/stats" {
+            let status = if matches!(path, "/" | "/index.html" | "/ticket" | "/stats" | "/lobby") {
                 "200 OK"
             } else {
                 "404 Not Found"

@@ -24,7 +24,12 @@ async fn next_msg(handle: &mut ascii_royale::net::protocol::ServerHandle) -> Ser
 async fn remote_player_joins_plays_and_disconnects() {
     let hosted = timeout(
         Duration::from_secs(60),
-        host::start(HostOpts { name: "hostess".into(), bots: 0, networked: true }),
+        host::start(HostOpts {
+            name: "hostess".into(),
+            bots: 0,
+            networked: true,
+            announce: None,
+        }),
     )
     .await
     .expect("endpoint bind timed out")
@@ -97,6 +102,7 @@ async fn arena_auto_starts_queues_and_resets() {
             http_port: None,
             stats_file: None,
             browser_play_url: None,
+            announce: false,
         }),
     )
     .await
@@ -144,4 +150,42 @@ async fn arena_auto_starts_queues_and_resets() {
             other => panic!("expected countdown roster, got {other:?}"),
         }
     }
+}
+
+/// Gossip lobby: an announcer's beacon is discovered by a browser that
+/// bootstraps off it. Exercises the real iroh-gossip mesh.
+#[tokio::test]
+#[ignore = "needs network access to n0 discovery/relay"]
+async fn lobby_beacon_is_discovered() {
+    use ascii_royale::net::lobby;
+
+    let boot_id = timeout(
+        Duration::from_secs(60),
+        lobby::spawn_announce(None, || lobby::Beacon {
+            ticket: "test-ticket-xyz".into(),
+            name: "test-arena".into(),
+            aboard: 2,
+            seats: 16,
+            phase: "boarding".into(),
+            starting_in: None,
+        }),
+    )
+    .await
+    .expect("announce bind timed out")
+    .expect("announce failed");
+
+    let boot = boot_id.trim().parse().ok();
+    let listings = lobby::discover(boot).await.expect("discover failed");
+
+    // The beacon should show up within a few gossip rounds.
+    let mut found = false;
+    for _ in 0..30 {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let snap = lobby::snapshot(&listings);
+        if snap.iter().any(|l| l.beacon.ticket == "test-ticket-xyz" && l.beacon.aboard == 2) {
+            found = true;
+            break;
+        }
+    }
+    assert!(found, "browser should discover the announced beacon");
 }

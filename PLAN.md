@@ -88,9 +88,32 @@ Status legend: [ ] todo · [x] done · [~] in progress
 - [x] silenced libasound no-device noise in headless guest launchers
 - [x] deployed + verified: royale.boxd.sh (page/ticket/stats), play.royale.boxd.sh
 
-### (b) iroh-gossip well-known topic — DO SECOND
+### (b) iroh-gossip lobby browser — BUILDING
 - [x] COMPAT RESOLVED: iroh-gossip 0.100.0 depends on iroh =1.0.0-rc.1 (exact
-      match to ours) — the "0.100 vs 1.0-rc" gap was a false alarm. NOT blocked.
+      match); verified `iroh + iroh-gossip` resolve to ONE iroh version. API:
+      `Gossip::builder().spawn(endpoint)` → `subscribe(topic, bootstrap)` →
+      `GossipSender`/`GossipReceiver`.
+- design:
+  - well-known topic = blake3("ascii-royale/lobby/v0"); a `LobbyBeacon`
+    {ticket, name, aboard, seats, phase, starting_in, ts} is gossiped by hosts
+    every ~2s; browsers collect + expire entries older than ~10s.
+  - BOOTSTRAP (the one real fork): gossip needs an initial peer. Pragmatic,
+    on-brand choice — arena publishes its gossip EndpointId at `/lobby` (HTTP,
+    next to `/ticket`); `browse` and `host --announce` fetch it and bootstrap
+    off it, then gossip is p2p. Same caveat class as n0 discovery / web ticket
+    (bootstrap only; mesh is peer-to-peer after). Alt for later:
+    distributed-topic-tracker (DHT rendezvous, no bootstrap node).
+  - run gossip on a SEPARATE endpoint from the game (no refactor of the game
+    accept loop); the beacon carries the game ticket.
+- [x] src/net/lobby.rs: spawn_announce(beacon source) + discover() → Listings
+- [x] arena announces by default (bootstrap seed); publishes /lobby gossip id;
+      `host --announce` opt-in (bootstraps off /lobby)
+- [x] `ascii-royale browse` — live TUI list of open games; ↑↓ pick, a auto-join
+- [x] tests: beacon roundtrip, snapshot ordering, browse render, + real-network
+      lobby_beacon_is_discovered e2e (announce → discover, passes)
+- [x] note: time crate bumped to 0.3.49 to fix a rustc coherence conflict that
+      iroh-gossip's blanket impl triggered with older time
+- [ ] deploy to VM + verify `browse` against the live arena
 - [ ] hosts announce {ticket, name, slots, status, drop-countdown} on a fixed topic
 - [ ] `ascii-royale browse` — live list of open drops, pick one or auto-join soonest
 - [ ] decentralized: no central server, same iroh network, no signup
