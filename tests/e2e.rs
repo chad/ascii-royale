@@ -49,8 +49,8 @@ async fn remote_player_joins_plays_and_disconnects() {
 
     // Both sides hear about the roster of two.
     loop {
-        if let ServerMsg::Roster { names, .. } = next_msg(&mut remote).await {
-            if names.len() == 2 {
+        if let ServerMsg::Roster { aboard, .. } = next_msg(&mut remote).await {
+            if aboard.len() == 2 {
                 break;
             }
         }
@@ -94,6 +94,7 @@ async fn arena_auto_starts_queues_and_resets() {
             auto_start_secs: 1,
             auto_reset_secs: 1,
             ticket_file: None,
+            http_port: None,
         }),
     )
     .await

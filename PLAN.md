@@ -57,6 +57,34 @@ Status legend: [ ] todo · [x] done · [~] in progress
       (SHA256:MksQnpeWoT09c/zZGXGRDxNySe7wIoeWS1A542xxU/o) in README + repo desc
 - [ ] consider a cargo feature to build without rodio for headless servers
 
+## Matchmaking — find others without sharing tickets (a → b)
+
+### (a) Published arena + one-command join — DO FIRST
+- [ ] arena publishes its current ticket over HTTP (boxd HTTPS proxy works for
+      HTTP — only 502'd before because it pointed at sshd). Tiny endpoint in
+      `serve`, or `serve` writes the ticket file + a minimal HTTP responder.
+- [ ] `ascii-royale play [--arena URL]` — GET the ticket, join. Default URL
+      baked in (the reference arena). One command, no ticket-sharing, no accounts.
+- [ ] README: "play with strangers: `ascii-royale play`"
+
+### start-without-a-full-human-lobby UX  (feel chosen via question — see below)
+- [ ] implement chosen direction in `serve`'s lobby state machine
+- [ ] client rendering for it; new ClientMsg if a "ready" signal is needed
+- [ ] keep it server-authoritative (extends existing countdown, doesn't fight arch)
+
+### (b) iroh-gossip well-known topic — DO SECOND
+- [ ] GATE: iroh-gossip is 0.100.0 vs our iroh 1.0.0-rc.1 — resolve version
+      skew first (wait for gossip to track 1.0, or pin iroh, or evaluate
+      distributed-topic-tracker). Don't start (b) until this is settled.
+- [ ] hosts announce {ticket, name, slots, status, drop-countdown} on a fixed topic
+- [ ] `ascii-royale browse` — live list of open drops, pick one or auto-join soonest
+- [ ] decentralized: no central server, same iroh network, no signup
+
+### NOT doing: Freeq as the matchmaking primitive
+Wrong layer for anonymous matchmaking (second overlay network + identity
+requirement fights the no-signup ethos). Reserve Freeq for a future *social*
+layer (DM-to-invite, challenges, community feed) if that becomes a goal.
+
 ## Ideas for later (not started)
 - [ ] Spectate the killer instead of your corpse; match restart from results
 - [ ] Shotgun spread / diagonal aiming; throwables; airdrops

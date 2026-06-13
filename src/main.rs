@@ -30,6 +30,15 @@ enum Command {
         #[arg(long, default_value_t = default_name())]
         name: String,
     },
+    /// Find and join the public arena — no ticket needed. Fetches the
+    /// current ticket over HTTP, then joins peer-to-peer over iroh.
+    Play {
+        #[arg(long, default_value_t = default_name())]
+        name: String,
+        /// Arena ticket URL (or a raw ticket). Defaults to the public arena.
+        #[arg(long, default_value_t = DEFAULT_ARENA.to_string())]
+        arena: String,
+    },
     /// Play offline against bots.
     Solo {
         #[arg(long, default_value_t = default_name())]
@@ -51,11 +60,39 @@ enum Command {
         /// Write the join ticket here for launcher scripts to read.
         #[arg(long)]
         ticket_file: Option<std::path::PathBuf>,
+        /// Also publish the ticket over HTTP on this port (for `play` / the
+        /// boxd HTTPS proxy to fetch).
+        #[arg(long)]
+        http_port: Option<u16>,
     },
 }
 
+/// The public arena's ticket endpoint (boxd HTTPS proxy → the arena's HTTP
+/// ticket server). `play` GETs this, then joins over iroh.
+const DEFAULT_ARENA: &str = "https://royale.boxd.sh/";
+
 fn default_name() -> String {
     std::env::var("USER").unwrap_or_else(|_| "player".into())
+}
+
+/// Resolve an arena arg to a ticket: a raw ticket is used directly, anything
+/// that looks like a URL is fetched over HTTP(S).
+fn resolve_ticket(arena: &str) -> Result<String> {
+    let arena = arena.trim();
+    if arena.starts_with("http://") || arena.starts_with("https://") {
+        let body = ureq::get(arena)
+            .call()
+            .map_err(|e| anyhow::anyhow!("couldn't reach the arena at {arena}: {e}"))?
+            .body_mut()
+            .read_to_string()?;
+        let ticket = body.trim().to_string();
+        if ticket.is_empty() {
+            anyhow::bail!("arena returned an empty ticket");
+        }
+        Ok(ticket)
+    } else {
+        Ok(arena.to_string())
+    }
 }
 
 fn main() -> Result<()> {
@@ -80,19 +117,27 @@ fn main() -> Result<()> {
             let handle = rt.block_on(client::connect(&ticket, &name))?;
             ui::tui::run(handle, None, false)?;
         }
+        Command::Play { name, arena } => {
+            eprintln!("finding the arena...");
+            let ticket = resolve_ticket(&arena)?;
+            eprintln!("dropping in...");
+            let handle = rt.block_on(client::connect(&ticket, &name))?;
+            ui::tui::run(handle, None, false)?;
+        }
         Command::Solo { name, bots } => {
             // Solo goes through the lobby too: that's where key config lives.
             let hosted =
                 rt.block_on(host::start(HostOpts { name, bots, networked: false }))?;
             ui::tui::run(hosted.handle, None, true)?;
         }
-        Command::Serve { bots, auto_start_secs, auto_reset_secs, ticket_file } => {
+        Command::Serve { bots, auto_start_secs, auto_reset_secs, ticket_file, http_port } => {
             return rt.block_on(async {
                 let ticket = host::serve(host::ServeOpts {
                     bots,
                     auto_start_secs,
                     auto_reset_secs,
                     ticket_file,
+                    http_port,
                 })
                 .await?;
                 println!("[arena] ticket: {ticket}");

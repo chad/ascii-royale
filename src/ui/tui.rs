@@ -14,11 +14,14 @@ use crate::game::items::ItemKind;
 use crate::game::map::{Map, Tile};
 use crate::game::state::{InputCmd, Snapshot};
 use crate::game::Dir;
-use crate::net::protocol::{ClientMsg, ServerHandle, ServerMsg, Standing};
+use crate::net::protocol::{Aboard, ClientMsg, ServerHandle, ServerMsg, Standing};
 use crate::ui::keys::{Action, Keybinds};
 use crate::ui::sound::Sounds;
 
 const FEED_LINES: usize = 64;
+/// Seconds the dropship bar treats as "empty"; matches the server's 1-human
+/// base countdown so the bar reads full right as the drop fires.
+const LOBBY_BAR_MAX: u32 = 30;
 
 enum Screen {
     Connecting,
@@ -38,8 +41,11 @@ pub struct App {
     map: Option<Map>,
     my_id: u8,
     snap: Option<Snapshot>,
-    roster: Vec<String>,
+    aboard: Vec<Aboard>,
+    seats: u8,
     starting_in: Option<u32>,
+    /// Whether we've toggled ourselves ready in the dropship lobby.
+    ready: bool,
     feed: VecDeque<String>,
     link_lost: bool,
     sounds: Sounds,
@@ -64,8 +70,10 @@ pub fn run(handle: ServerHandle, ticket: Option<String>, is_host: bool) -> Resul
         map: None,
         my_id: 0,
         snap: None,
-        roster: Vec::new(),
+        aboard: Vec::new(),
+        seats: 16,
         starting_in: None,
+        ready: false,
         feed: VecDeque::new(),
         link_lost: false,
         sounds: Sounds::new(),
@@ -117,10 +125,14 @@ impl App {
                 self.snap = None;
                 self.feed.clear();
                 self.starting_in = None;
+                self.ready = false;
                 self.screen = Screen::Lobby;
             }
-            ServerMsg::Roster { names, starting_in } => {
-                self.roster = names;
+            ServerMsg::Roster { aboard, seats, starting_in } => {
+                // Trust the server's view of our own ready state.
+                self.ready = aboard.iter().any(|a| a.is_you && a.ready);
+                self.aboard = aboard;
+                self.seats = seats;
                 self.starting_in = starting_in;
             }
             ServerMsg::Waiting { alive } => {
@@ -187,6 +199,11 @@ impl App {
                 KeyCode::Char('q') | KeyCode::Esc => true,
                 KeyCode::Enter if self.is_host => {
                     let _ = self.handle.tx.try_send(ClientMsg::Start);
+                    false
+                }
+                KeyCode::Char('r') => {
+                    self.ready = !self.ready;
+                    let _ = self.handle.tx.try_send(ClientMsg::Ready(self.ready));
                     false
                 }
                 _ => false,
@@ -347,29 +364,55 @@ impl App {
             lines.push(Line::from("connected to host".green()));
         }
         lines.push(Line::raw(""));
-        lines.push(Line::from(format!("combatants ({})", self.roster.len()).bold()));
-        for name in &self.roster {
-            lines.push(Line::from(format!("  @ {name}")));
+
+        // Dropship countdown bar (arena): fills as the drop approaches.
+        if let Some(secs) = self.starting_in {
+            let mins = secs / 60;
+            let clock = format!("{mins}:{:02}", secs % 60);
+            lines.push(Line::from(format!("NEXT DROP IN  {clock}").yellow().bold()));
+            let width = 22usize;
+            let filled = (((LOBBY_BAR_MAX.saturating_sub(secs)) as usize * width)
+                / LOBBY_BAR_MAX.max(1) as usize)
+                .min(width);
+            let bar: String = "▓".repeat(filled) + &"░".repeat(width - filled);
+            lines.push(Line::from(vec![bar.cyan(), "  more = sooner".dark_gray()]));
+            lines.push(Line::raw(""));
+        }
+
+        lines.push(Line::from(vec![
+            format!("aboard ({})", self.aboard.len()).bold(),
+            format!("        the drop fills to {}", self.seats).dark_gray(),
+        ]));
+        for a in &self.aboard {
+            let tag = if a.is_you { " (you)" } else { "" };
+            let label = format!("  @ {}{tag}", a.name);
+            let label = format!("{label:<20}");
+            let name_span = if a.is_you { label.yellow().bold() } else { label.into() };
+            let state = if a.ready { "ready".green() } else { "......".dark_gray() };
+            lines.push(Line::from(vec![name_span, state]));
         }
         lines.push(Line::raw(""));
-        if let Some(secs) = self.starting_in {
-            lines.push(Line::from(
-                format!("match starts in {secs}s — bots fill empty slots").green().bold(),
-            ));
-            lines.push(Line::from("[k] keys · [q] quit".dark_gray()));
+
+        // Action hint depends on mode.
+        let ready_hint = if self.ready { "[r] unready" } else { "[r] ready up" };
+        if self.starting_in.is_some() {
+            lines.push(Line::from(format!("{ready_hint} · [k] keys · [q] quit").dark_gray()));
         } else if self.is_host {
             lines.push(Line::from(
-                "[enter] drop in (bots fill empty slots) · [k] keys · [q] quit".dark_gray(),
+                format!("[enter] drop now · {ready_hint} · [k] keys · [q] quit").dark_gray(),
             ));
         } else {
-            lines.push(Line::from("waiting for host to start · [k] keys · [q] quit".dark_gray()));
+            lines.push(Line::from(
+                format!("{ready_hint} · waiting for host · [k] keys · [q] quit").dark_gray(),
+            ));
         }
         let h = (lines.len() as u16 + 4).min(f.area().height);
         let area = centered(f.area(), 72, h);
+        let title = if self.starting_in.is_some() { " ascii-royale · dropship " } else { " ascii-royale · lobby " };
         let p = Paragraph::new(lines)
             .centered()
             .wrap(Wrap { trim: false })
-            .block(Block::bordered().title(" ascii-royale · lobby "));
+            .block(Block::bordered().title(title));
         f.render_widget(p, area);
     }
 
@@ -820,8 +863,10 @@ pub(crate) mod tests {
             map: None,
             my_id: 0,
             snap: None,
-            roster: Vec::new(),
+            aboard: Vec::new(),
+            seats: 16,
             starting_in: None,
+            ready: false,
             feed: VecDeque::new(),
             link_lost: false,
             sounds: Sounds::disabled(),
@@ -845,19 +890,45 @@ pub(crate) mod tests {
         out
     }
 
+    fn aboard(names: &[&str]) -> Vec<Aboard> {
+        names
+            .iter()
+            .enumerate()
+            .map(|(i, n)| Aboard { name: (*n).into(), ready: false, is_you: i == 0 })
+            .collect()
+    }
+
     #[test]
     fn lobby_screen_shows_ticket_and_roster() {
         let mut app = test_app();
         let world = World::new(11, GameConfig::default());
         app.on_server_msg(ServerMsg::Welcome { id: 0, map: world.map, config: world.config });
         app.on_server_msg(ServerMsg::Roster {
-            names: vec!["chad".into(), "wanderer".into()],
+            aboard: aboard(&["chad", "wanderer"]),
+            seats: 16,
             starting_in: None,
         });
         let text = frame_text(&app);
         assert!(text.contains("abc123ticket"), "lobby should show the ticket");
         assert!(text.contains("@ chad") && text.contains("@ wanderer"));
-        assert!(text.contains("[enter] drop in"));
+        assert!(text.contains("[enter] drop now"));
+    }
+
+    #[test]
+    fn dropship_shows_countdown_and_ready() {
+        let mut app = test_app();
+        app.is_host = false;
+        let world = World::new(11, GameConfig::default());
+        app.on_server_msg(ServerMsg::Welcome { id: 0, map: world.map, config: world.config });
+        let mut roster = aboard(&["chad", "vex"]);
+        roster[1].ready = true;
+        app.on_server_msg(ServerMsg::Roster { aboard: roster, seats: 16, starting_in: Some(12) });
+        let text = frame_text(&app);
+        assert!(text.contains("NEXT DROP IN"), "countdown header should show");
+        assert!(text.contains("0:12"), "clock should render mm:ss");
+        assert!(text.contains("fills to 16"), "seat fill framing");
+        assert!(text.contains("ready up"), "ready hint should show");
+        assert!(text.contains("ready"), "vex's ready state should render");
     }
 
     #[test]
@@ -934,12 +1005,12 @@ pub(crate) mod tests {
 
     pub(super) fn print_lobby_frame() {
         let mut app = test_app();
+        app.is_host = false;
         let world = World::new(11, GameConfig::default());
         app.on_server_msg(ServerMsg::Welcome { id: 0, map: world.map, config: world.config });
-        app.on_server_msg(ServerMsg::Roster {
-            names: vec!["chad".into(), "wanderer".into(), "kex".into()],
-            starting_in: None,
-        });
+        let mut roster = aboard(&["chad", "vex", "kestrel"]);
+        roster[1].ready = true;
+        app.on_server_msg(ServerMsg::Roster { aboard: roster, seats: 16, starting_in: Some(12) });
         println!("{}", frame_text(&app));
     }
 
@@ -947,7 +1018,11 @@ pub(crate) mod tests {
         let mut app = test_app();
         let world = World::new(11, GameConfig::default());
         app.on_server_msg(ServerMsg::Welcome { id: 0, map: world.map, config: world.config });
-        app.on_server_msg(ServerMsg::Roster { names: vec!["chad".into()], starting_in: None });
+        app.on_server_msg(ServerMsg::Roster {
+            aboard: aboard(&["chad"]),
+            seats: 16,
+            starting_in: None,
+        });
         app.on_key(KeyCode::Char('k'), KeyModifiers::NONE);
         app.on_key(KeyCode::Down, KeyModifiers::NONE);
         println!("{}", frame_text(&app));

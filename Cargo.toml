@@ -15,6 +15,7 @@ ratatui = { version = "0.30", default-features = false, features = ["crossterm",
 rodio = { version = "0.22.2", default-features = false, features = ["playback"] }
 serde = { version = "1", features = ["derive"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "signal"] }
+ureq = "3.3.0"
 
 [profile.release]
 lto = true

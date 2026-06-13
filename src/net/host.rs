@@ -10,7 +10,9 @@ use tokio::time::MissedTickBehavior;
 use crate::game::state::{MatchPhase, World};
 use crate::game::{GameConfig, TPS};
 
-use super::protocol::{recv_frame, send_frame, ClientMsg, ServerHandle, ServerMsg, Standing, ALPN};
+use super::protocol::{
+    recv_frame, send_frame, Aboard, ClientMsg, ServerHandle, ServerMsg, Standing, ALPN,
+};
 
 const BOT_NAMES: &[&str] = &[
     "Rusty", "Clanker", "Gritbox", "Vex", "Mortar", "Slag", "Pixel", "Doomba", "Crank", "Widget",
@@ -38,6 +40,21 @@ struct Client {
     tx: mpsc::Sender<ServerMsg>,
     /// Player id in the current world; None while queued for the next match.
     player: Option<u8>,
+    /// "Ready to drop" in the lobby; all-aboard-ready launches early.
+    ready: bool,
+}
+
+/// Dropship countdown tuning (the "more jumpers = sooner drop" feel): with one
+/// human aboard the timer is `base` seconds; each additional human shaves
+/// `base/5`, never below the floor. New joiners only ever pull the clock in.
+const DROP_FLOOR_SECS: u32 = 5;
+
+/// Target countdown (ticks) for a given number of humans aboard.
+fn drop_target_ticks(humans: usize, base_secs: u32) -> u32 {
+    let h = humans.max(1) as u32;
+    let shave = (base_secs / 5).max(1);
+    let secs = base_secs.saturating_sub((h - 1) * shave).max(DROP_FLOOR_SECS.min(base_secs));
+    secs * TPS
 }
 
 /// How the match lifecycle is driven.
@@ -135,6 +152,10 @@ pub struct ServeOpts {
     pub auto_start_secs: u32,
     pub auto_reset_secs: u32,
     pub ticket_file: Option<PathBuf>,
+    /// Publish the ticket over HTTP on this port so `ascii-royale play` (and
+    /// the boxd HTTPS proxy) can fetch it. The actual game is iroh p2p, so
+    /// this only carries the ~64-char ticket, never gameplay.
+    pub http_port: Option<u16>,
 }
 
 /// Headless arena: no local player, matches start when humans show up and
@@ -150,6 +171,9 @@ pub async fn serve(opts: ServeOpts) -> Result<String> {
         }
         std::fs::write(path, &ticket).context("writing ticket file")?;
     }
+    if let Some(port) = opts.http_port {
+        tokio::spawn(serve_ticket_http(port, ticket.clone()));
+    }
     tokio::spawn(accept_loop(endpoint, inbound_tx));
     tokio::spawn(game_loop(
         LoopOpts {
@@ -162,6 +186,39 @@ pub async fn serve(opts: ServeOpts) -> Result<String> {
         inbound_rx,
     ));
     Ok(ticket)
+}
+
+/// Minimal HTTP/1.1 responder that serves the arena ticket as plain text on
+/// every request. No framework — the response is a fixed string. Behind the
+/// boxd HTTPS proxy this becomes `https://<vm>.boxd.sh/` returning the ticket.
+async fn serve_ticket_http(port: u16, ticket: String) {
+    let body = format!("{ticket}\n");
+    let response = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n\
+         Access-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n{}",
+        body.len(),
+        body
+    );
+    let listener = match tokio::net::TcpListener::bind(("0.0.0.0", port)).await {
+        Ok(l) => l,
+        Err(e) => {
+            println!("[http] could not bind :{port}: {e}");
+            return;
+        }
+    };
+    println!("[http] serving ticket on :{port}");
+    loop {
+        let Ok((mut sock, _)) = listener.accept().await else { continue };
+        let response = response.clone();
+        tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            // Drain the request (we ignore it) then reply. Best-effort.
+            let mut buf = [0u8; 1024];
+            let _ = sock.read(&mut buf).await;
+            let _ = sock.write_all(response.as_bytes()).await;
+            let _ = sock.shutdown().await;
+        });
+    }
 }
 
 async fn bind_endpoint() -> Result<Endpoint> {
@@ -292,13 +349,20 @@ async fn game_loop(opts: LoopOpts, mut inbound: mpsc::Receiver<Inbound>) {
                             clients.len() - 1
                         });
                         let queued = player.is_none();
-                        clients[conn] = Some(Client { name: name.clone(), tx, player });
+                        clients[conn] = Some(Client { name: name.clone(), tx, player, ready: false });
                         let _ = reply.send(JoinReply::Accepted { conn, welcome, rx });
                         if queued {
                             send_to(&clients, conn, ServerMsg::Waiting {
                                 alive: world.alive_count(),
                             });
                         } else {
+                            // New jumper aboard: a fresh dropship clock can only
+                            // pull in, never push out.
+                            if let Some(base) = opts.auto_start_secs {
+                                let humans = lobby_humans(&clients);
+                                let target = drop_target_ticks(humans, base);
+                                start_in = Some(start_in.map_or(target, |t| t.min(target)));
+                            }
                             broadcast_roster(&world, &clients, start_in);
                         }
                         if opts.log {
@@ -325,6 +389,22 @@ async fn game_loop(opts: LoopOpts, mut inbound: mpsc::Receiver<Inbound>) {
                                     );
                                 }
                             }
+                            ClientMsg::Ready(r) => {
+                                if let Some(c) = clients.get_mut(conn).and_then(Option::as_mut) {
+                                    if c.player.is_some() {
+                                        c.ready = r;
+                                    }
+                                }
+                                if world.phase == MatchPhase::Lobby {
+                                    if all_aboard_ready(&clients) {
+                                        // Everyone's keen: drop now, don't wait the clock out.
+                                        start_match(&mut world, &mut clients, opts.bots, start_in);
+                                        start_in = None;
+                                    } else {
+                                        broadcast_roster(&world, &clients, start_in);
+                                    }
+                                }
+                            }
                             _ => {}
                         }
                     }
@@ -337,7 +417,16 @@ async fn game_loop(opts: LoopOpts, mut inbound: mpsc::Receiver<Inbound>) {
                                 println!("[left] {}", client.name);
                             }
                             if world.phase == MatchPhase::Lobby {
-                                broadcast_roster(&world, &clients, start_in);
+                                // The un-ready holdout may have just left.
+                                if opts.auto_start_secs.is_some()
+                                    && lobby_humans(&clients) > 0
+                                    && all_aboard_ready(&clients)
+                                {
+                                    start_match(&mut world, &mut clients, opts.bots, start_in);
+                                    start_in = None;
+                                } else {
+                                    broadcast_roster(&world, &clients, start_in);
+                                }
                             }
                         }
                     }
@@ -345,16 +434,16 @@ async fn game_loop(opts: LoopOpts, mut inbound: mpsc::Receiver<Inbound>) {
             }
             _ = ticker.tick() => {
                 if world.phase == MatchPhase::Lobby {
-                    // Arena: count down to auto-start while humans are present.
-                    let Some(secs) = opts.auto_start_secs else { continue };
-                    let humans = clients.iter().flatten().filter(|c| c.player.is_some()).count();
+                    // Arena: the dropship clock runs while humans are aboard.
+                    let Some(base) = opts.auto_start_secs else { continue };
+                    let humans = lobby_humans(&clients);
                     if humans == 0 {
                         if start_in.take().is_some() {
                             broadcast_roster(&world, &clients, None);
                         }
                         continue;
                     }
-                    let t = *start_in.get_or_insert(secs * TPS);
+                    let t = *start_in.get_or_insert(drop_target_ticks(humans, base));
                     if t == 0 {
                         start_match(&mut world, &mut clients, opts.bots, start_in);
                         start_in = None;
@@ -448,6 +537,7 @@ fn reset_to_lobby(
     *start_in = None;
     *reset_in = None;
     for client in clients.iter_mut().flatten() {
+        client.ready = false;
         let name = unique_name(world, client.name.clone());
         client.player = world.add_player(name, false);
         if let Some(id) = client.player {
@@ -507,20 +597,83 @@ fn unique_name(world: &World, base: String) -> String {
     base
 }
 
-fn broadcast_roster(world: &World, clients: &[Option<Client>], start_in: Option<u32>) {
-    let names: Vec<String> = world
-        .players
-        .iter()
-        .filter(|p| p.connected || p.is_bot)
-        .map(|p| if p.is_bot { format!("{} [bot]", p.name) } else { p.name.clone() })
-        .collect();
-    let starting_in = start_in.map(|t| t / TPS);
-    for client in clients.iter().flatten() {
-        if client.player.is_some() {
-            let _ = client.tx.try_send(ServerMsg::Roster {
-                names: names.clone(),
-                starting_in,
-            });
+fn lobby_humans(clients: &[Option<Client>]) -> usize {
+    clients.iter().flatten().filter(|c| c.player.is_some()).count()
+}
+
+fn all_aboard_ready(clients: &[Option<Client>]) -> bool {
+    let mut any = false;
+    for c in clients.iter().flatten().filter(|c| c.player.is_some()) {
+        any = true;
+        if !c.ready {
+            return false;
         }
+    }
+    any
+}
+
+fn broadcast_roster(world: &World, clients: &[Option<Client>], start_in: Option<u32>) {
+    let starting_in = start_in.map(|t| t / TPS);
+    let seats = world.config.max_players;
+    // Everyone aboard the dropship (humans; bots fill the rest silently at drop).
+    let base: Vec<(usize, String, bool)> = clients
+        .iter()
+        .enumerate()
+        .filter_map(|(i, c)| {
+            let c = c.as_ref()?;
+            let pid = c.player?;
+            Some((i, world.players[pid as usize].name.clone(), c.ready))
+        })
+        .collect();
+    for (ci, client) in clients.iter().enumerate() {
+        let Some(client) = client else { continue };
+        if client.player.is_none() {
+            continue;
+        }
+        let aboard: Vec<Aboard> = base
+            .iter()
+            .map(|(i, name, ready)| Aboard { name: name.clone(), ready: *ready, is_you: *i == ci })
+            .collect();
+        let _ = client.tx.try_send(ServerMsg::Roster { aboard, seats, starting_in });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn client(player: Option<u8>, ready: bool) -> Option<Client> {
+        let (tx, _rx) = mpsc::channel(8);
+        Some(Client { name: "p".into(), tx, player, ready })
+    }
+
+    #[test]
+    fn dropship_clock_shortens_as_humans_board() {
+        // base 30s: 1 human → 30s, each extra shaves 6s, floor 5s.
+        assert_eq!(drop_target_ticks(1, 30), 30 * TPS);
+        assert_eq!(drop_target_ticks(2, 30), 24 * TPS);
+        assert_eq!(drop_target_ticks(5, 30), 6 * TPS);
+        assert_eq!(drop_target_ticks(6, 30), 5 * TPS); // hits the floor
+        assert_eq!(drop_target_ticks(20, 30), 5 * TPS); // never below floor
+        // monotonic: more humans is never a longer wait
+        for h in 1..16 {
+            assert!(drop_target_ticks(h + 1, 30) <= drop_target_ticks(h, 30));
+        }
+    }
+
+    #[test]
+    fn all_aboard_ready_needs_everyone_and_at_least_one() {
+        assert!(!all_aboard_ready(&[]));
+        assert!(!all_aboard_ready(&[None, None]));
+        // a queued spectator (player None) doesn't gate the drop
+        assert!(all_aboard_ready(&[client(Some(0), true), client(None, false)]));
+        assert!(!all_aboard_ready(&[client(Some(0), true), client(Some(1), false)]));
+        assert!(all_aboard_ready(&[client(Some(0), true), client(Some(1), true)]));
+    }
+
+    #[test]
+    fn lobby_humans_counts_only_seated_players() {
+        let clients = [client(Some(0), false), client(None, false), None, client(Some(3), true)];
+        assert_eq!(lobby_humans(&clients), 2);
     }
 }

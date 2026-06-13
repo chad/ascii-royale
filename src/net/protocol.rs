@@ -19,6 +19,16 @@ pub enum ClientMsg {
     Input(InputCmd),
     /// Begin the match — only honored from the host's own local client.
     Start,
+    /// Toggle/set "ready to drop" in the dropship lobby.
+    Ready(bool),
+}
+
+/// One combatant shown in the dropship lobby roster.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Aboard {
+    pub name: String,
+    pub ready: bool,
+    pub is_you: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -32,7 +42,10 @@ pub struct Standing {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ServerMsg {
     Welcome { id: u8, map: Map, config: GameConfig },
-    Roster { names: Vec<String>, starting_in: Option<u32> },
+    /// The dropship lobby. `starting_in` is Some(secs) when a countdown is
+    /// running (arena) or None when waiting on a boss to start (host mode).
+    /// `seats` is the island capacity; empty seats fill with combatants at drop.
+    Roster { aboard: Vec<Aboard>, seats: u8, starting_in: Option<u32> },
     Snapshot(Box<Snapshot>),
     End { standings: Vec<Standing> },
     /// You arrived mid-match: hang tight, the lobby reopens after this one.
