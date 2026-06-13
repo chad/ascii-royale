@@ -74,7 +74,9 @@ Status legend: [ ] todo · [x] done · [~] in progress
 - [x] client renders dropship: countdown bar, aboard+ready, [r] ready up
 - [x] server-authoritative (extends the existing countdown); tests for
       shortening, all-ready, lobby-human counting; e2e arena lifecycle green
-- [ ] deploy to VM + verify `ascii-royale play` end-to-end over HTTPS
+- [x] deployed to VM: arena runs `serve --http-port 8000`, boxd proxy → 8000,
+      ticket live at https://royale.boxd.sh/; `ascii-royale play` verified
+      end-to-end (fetch over HTTPS → iroh join → arena logged the join)
 
 ### (b) iroh-gossip well-known topic — DO SECOND
 - [ ] GATE: iroh-gossip is 0.100.0 vs our iroh 1.0.0-rc.1 — resolve version
