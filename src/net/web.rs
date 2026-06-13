@@ -203,6 +203,19 @@ pub async fn serve(
             let n = sock.read(&mut buf).await.unwrap_or(0);
             let req = String::from_utf8_lossy(&buf[..n]);
             let path = req.split_whitespace().nth(1).unwrap_or("/");
+            // The gameplay GIF is binary and immutable — handle it separately
+            // so we can send raw bytes with a long cache.
+            if path == "/gameplay.gif" {
+                let header = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: image/gif\r\nContent-Length: {}\r\n\
+                     Cache-Control: public, max-age=86400\r\nConnection: close\r\n\r\n",
+                    GAMEPLAY_GIF.len()
+                );
+                let _ = sock.write_all(header.as_bytes()).await;
+                let _ = sock.write_all(GAMEPLAY_GIF).await;
+                let _ = sock.shutdown().await;
+                return;
+            }
             let (ctype, body) = match path {
                 "/ticket" => ("text/plain; charset=utf-8", format!("{ticket}\n")),
                 "/stats" => {
@@ -231,6 +244,9 @@ pub async fn serve(
         });
     }
 }
+
+/// Embedded so the arena binary is self-contained (no asset files to ship).
+const GAMEPLAY_GIF: &[u8] = include_bytes!("../../assets/gameplay.gif");
 
 fn landing_html(browser_play_url: Option<&str>) -> String {
     let play_button = match browser_play_url {
@@ -261,9 +277,12 @@ const HTML: &str = r##"<!doctype html>
     min-height:100vh;padding:0 16px 64px}
   .wrap{max-width:880px;margin:0 auto}
   header{text-align:center;padding:40px 0 8px}
-  pre.logo{color:var(--amber);font-size:clamp(7px,1.7vw,13px);line-height:1.15;
-    margin:0;text-shadow:0 0 18px rgba(224,175,104,.25)}
-  .tag{color:var(--dim);margin:10px 0 0}
+  pre.logo{color:var(--amber);font-size:clamp(5px,1.35vw,11px);line-height:1.05;
+    margin:0;text-shadow:0 0 22px rgba(224,175,104,.35);overflow-x:auto}
+  .tag{color:var(--dim);margin:14px 0 0}
+  .hero{display:block;margin:22px auto 0;max-width:640px;width:100%;
+    border:1px solid var(--line);border-radius:10px;
+    box-shadow:0 0 40px rgba(125,207,255,.08);image-rendering:pixelated}
   .live{display:inline-flex;align-items:center;gap:8px;margin:18px 0 0;
     padding:7px 14px;border:1px solid var(--line);border-radius:999px;
     background:var(--panel);font-size:14px}
@@ -309,13 +328,15 @@ const HTML: &str = r##"<!doctype html>
 <body>
 <div class="wrap">
   <header>
-<pre class="logo">                _ _                            _
-  __ _ ___  ___(_|_)  _ __ ___  _   _  __ _| | ___
- / _` / __|/ __| | | | '__/ _ \| | | |/ _` | |/ _ \
-| (_| \__ \ (__| | | | | | (_) | |_| | (_| | |  __/
- \__,_|___/\___|_|_| |_|  \___/ \__, |\__,_|_|\___|
-                                |___/              </pre>
+<pre class="logo"> █████╗ ███████╗ ██████╗██╗██╗      ██████╗  ██████╗ ██╗   ██╗ █████╗ ██╗     ███████╗
+██╔══██╗██╔════╝██╔════╝██║██║      ██╔══██╗██╔═══██╗╚██╗ ██╔╝██╔══██╗██║     ██╔════╝
+███████║███████╗██║     ██║██║█████╗██████╔╝██║   ██║ ╚████╔╝ ███████║██║     █████╗
+██╔══██║╚════██║██║     ██║██║╚════╝██╔══██╗██║   ██║  ╚██╔╝  ██╔══██║██║     ██╔══╝
+██║  ██║███████║╚██████╗██║██║      ██║  ██║╚██████╔╝   ██║   ██║  ██║███████╗███████╗
+╚═╝  ╚═╝╚══════╝ ╚═════╝╚═╝╚═╝      ╚═╝  ╚═╝ ╚═════╝    ╚═╝   ╚═╝  ╚═╝╚══════╝╚══════╝</pre>
     <p class="tag">a battle royale you play in your terminal · peer-to-peer over iroh · no signup</p>
+    <img class="hero" src="/gameplay.gif" alt="ascii-royale gameplay" loading="eager">
+    <p class="muted" style="margin-top:-2px">an actual match — drop, scrap, last one standing</p>
     <div class="live"><span id="dot" class="dot"></span><span id="status">connecting…</span></div>
     <div class="cta">
       {{PLAY_BUTTON}}
