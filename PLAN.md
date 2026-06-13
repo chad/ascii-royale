@@ -113,7 +113,8 @@ Status legend: [ ] todo · [x] done · [~] in progress
       lobby_beacon_is_discovered e2e (announce → discover, passes)
 - [x] note: time crate bumped to 0.3.49 to fix a rustc coherence conflict that
       iroh-gossip's blanket impl triggered with older time
-- [ ] deploy to VM + verify `browse` against the live arena
+- [x] deployed to VM; verified live: /lobby serves bootstrap id, arena
+      announces, `ascii-royale browse` discovers + lists the live arena
 - [ ] hosts announce {ticket, name, slots, status, drop-countdown} on a fixed topic
 - [ ] `ascii-royale browse` — live list of open drops, pick one or auto-join soonest
 - [ ] decentralized: no central server, same iroh network, no signup

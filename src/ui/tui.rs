@@ -1116,6 +1116,26 @@ pub(crate) mod tests {
         println!("{}", frame_text(&app));
     }
 
+    pub(super) fn print_browse_frame() {
+        use crate::net::lobby::{Beacon, Listing};
+        use std::time::Instant;
+        let rows = vec![
+            Listing { beacon: Beacon { ticket: "t1".into(), name: "ascii-royale arena".into(), aboard: 4, seats: 16, phase: "countdown".into(), starting_in: Some(8) }, last_seen: Instant::now() },
+            Listing { beacon: Beacon { ticket: "t2".into(), name: "chads-game".into(), aboard: 2, seats: 16, phase: "boarding".into(), starting_in: None }, last_seen: Instant::now() },
+            Listing { beacon: Beacon { ticket: "t3".into(), name: "lan-party".into(), aboard: 11, seats: 16, phase: "live".into(), starting_in: None }, last_seen: Instant::now() },
+        ];
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw_browse(f, &rows, 0)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let mut out = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width { out.push_str(buf[(x, y)].symbol()); }
+            out.push('\n');
+        }
+        println!("{out}");
+    }
+
     #[test]
     fn results_screen_crowns_the_winner() {
         let mut app = test_app();
@@ -1192,6 +1212,12 @@ mod preview {
     #[ignore = "visual aid, run with --nocapture to see a frame"]
     fn print_lobby_frame() {
         helpers::print_lobby_frame();
+    }
+
+    #[test]
+    #[ignore = "visual aid, run with --nocapture to see a frame"]
+    fn print_browse_frame() {
+        helpers::print_browse_frame();
     }
 
     #[test]
