@@ -7,15 +7,6 @@ Up to 16 combatants drop onto a procedurally generated ASCII island. Scavenge
 weapons, dodge bullets you can actually see coming, and outrun the storm.
 Last one standing wins. Bots fill empty slots, so it's playable solo too.
 
-**Play right now — nothing to install:**
-
-```sh
-ssh -p 22222 play@bore.pub
-```
-
-No password, no account: pick a call sign and you're in the lobby. The match
-starts ~20 s later (bots fill empty seats) and the arena loops forever.
-
 ![gameplay — a full bot match from drop to victory royale](assets/gameplay.gif)
 
 *An actual match (sped up ~2x): the drop and first loot, a mid-game scrap,
@@ -217,11 +208,12 @@ into the name prompt. `deploy/` has the complete recipe:
 - `sshd-play.conf` — guest user: no shell, no forwarding, empty password
   (with OpenSSH this even skips the password prompt entirely)
 - `sshd-hardening.conf` — everything else stays key-only
-- `bore-tunnel.service` — public TCP ingress via [bore.pub](https://github.com/ekzhang/bore)
-  when your host (like the reference arena's VM) has no public port
 
-The reference arena lives on a [boxd](https://boxd.sh) VM behind a bore.pub
-tunnel — that's the `ssh -p 22222 play@bore.pub` at the top of this README.
+Point your DNS at a host with a public SSH port and you're done. (The
+host needs inbound TCP — a plain VPS works; some sandboxes don't expose
+one, in which case you need a real tunnel, not a shared unauthenticated
+relay: those hand out ports first-come, so a published port can silently
+end up pointing at someone else's machine.)
 
 ## How it works
 
