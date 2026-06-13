@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -9,6 +10,8 @@ use tokio::time::MissedTickBehavior;
 
 use crate::game::state::{MatchPhase, World};
 use crate::game::{GameConfig, TPS};
+
+use super::web::ArenaState;
 
 use super::protocol::{
     recv_frame, send_frame, Aboard, ClientMsg, ServerHandle, ServerMsg, Standing, ALPN,
@@ -69,6 +72,8 @@ struct LoopOpts {
     auto_reset_secs: Option<u32>,
     /// Log lifecycle events to stdout (only safe without a TUI).
     log: bool,
+    /// Shared live state + stats for the web server (arena only).
+    state: Option<Arc<Mutex<ArenaState>>>,
 }
 
 pub struct HostOpts {
@@ -106,6 +111,7 @@ pub async fn start(opts: HostOpts) -> Result<Hosted> {
             auto_start_secs: None,
             auto_reset_secs: None,
             log: false,
+            state: None,
         },
         inbound_rx,
     ));
@@ -152,10 +158,14 @@ pub struct ServeOpts {
     pub auto_start_secs: u32,
     pub auto_reset_secs: u32,
     pub ticket_file: Option<PathBuf>,
-    /// Publish the ticket over HTTP on this port so `ascii-royale play` (and
-    /// the boxd HTTPS proxy) can fetch it. The actual game is iroh p2p, so
-    /// this only carries the ~64-char ticket, never gameplay.
+    /// Serve the landing page + `/ticket` + `/stats` on this port (behind the
+    /// boxd HTTPS proxy). Gameplay is iroh p2p, so this only carries the
+    /// ~64-char ticket and small JSON, never gameplay.
     pub http_port: Option<u16>,
+    /// Persist the leaderboard here (survives restarts).
+    pub stats_file: Option<PathBuf>,
+    /// "Play in your browser" link shown on the landing page (e.g. a ttyd URL).
+    pub browser_play_url: Option<String>,
 }
 
 /// Headless arena: no local player, matches start when humans show up and
@@ -171,8 +181,16 @@ pub async fn serve(opts: ServeOpts) -> Result<String> {
         }
         std::fs::write(path, &ticket).context("writing ticket file")?;
     }
+    let state = Arc::new(Mutex::new(ArenaState::new(opts.stats_file)));
     if let Some(port) = opts.http_port {
-        tokio::spawn(serve_ticket_http(port, ticket.clone()));
+        let seats = GameConfig::default().max_players;
+        tokio::spawn(super::web::serve(
+            port,
+            ticket.clone(),
+            seats,
+            state.clone(),
+            opts.browser_play_url,
+        ));
     }
     tokio::spawn(accept_loop(endpoint, inbound_tx));
     tokio::spawn(game_loop(
@@ -182,43 +200,11 @@ pub async fn serve(opts: ServeOpts) -> Result<String> {
             auto_start_secs: Some(opts.auto_start_secs),
             auto_reset_secs: Some(opts.auto_reset_secs),
             log: true,
+            state: Some(state),
         },
         inbound_rx,
     ));
     Ok(ticket)
-}
-
-/// Minimal HTTP/1.1 responder that serves the arena ticket as plain text on
-/// every request. No framework — the response is a fixed string. Behind the
-/// boxd HTTPS proxy this becomes `https://<vm>.boxd.sh/` returning the ticket.
-async fn serve_ticket_http(port: u16, ticket: String) {
-    let body = format!("{ticket}\n");
-    let response = format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n\
-         Access-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n{}",
-        body.len(),
-        body
-    );
-    let listener = match tokio::net::TcpListener::bind(("0.0.0.0", port)).await {
-        Ok(l) => l,
-        Err(e) => {
-            println!("[http] could not bind :{port}: {e}");
-            return;
-        }
-    };
-    println!("[http] serving ticket on :{port}");
-    loop {
-        let Ok((mut sock, _)) = listener.accept().await else { continue };
-        let response = response.clone();
-        tokio::spawn(async move {
-            use tokio::io::{AsyncReadExt, AsyncWriteExt};
-            // Drain the request (we ignore it) then reply. Best-effort.
-            let mut buf = [0u8; 1024];
-            let _ = sock.read(&mut buf).await;
-            let _ = sock.write_all(response.as_bytes()).await;
-            let _ = sock.shutdown().await;
-        });
-    }
 }
 
 async fn bind_endpoint() -> Result<Endpoint> {
@@ -441,6 +427,7 @@ async fn game_loop(opts: LoopOpts, mut inbound: mpsc::Receiver<Inbound>) {
                         if start_in.take().is_some() {
                             broadcast_roster(&world, &clients, None);
                         }
+                        push_status(&opts.state, "boarding", 0, 0, None);
                         continue;
                     }
                     let t = *start_in.get_or_insert(drop_target_ticks(humans, base));
@@ -453,10 +440,14 @@ async fn game_loop(opts: LoopOpts, mut inbound: mpsc::Receiver<Inbound>) {
                         }
                         start_in = Some(t - 1);
                     }
+                    let secs = start_in.map(|t| t / TPS);
+                    let phase = if secs.is_some() { "countdown" } else { "live" };
+                    push_status(&opts.state, phase, humans as u8, 0, secs);
                     continue;
                 }
 
                 world.step();
+                push_status(&opts.state, "live", 0, world.alive_count(), None);
                 let feed = std::mem::take(&mut world.feed);
                 for client in clients.iter().flatten() {
                     match client.player {
@@ -480,12 +471,26 @@ async fn game_loop(opts: LoopOpts, mut inbound: mpsc::Receiver<Inbound>) {
                         standings_sent = true;
                         send_standings(&world, &clients);
                         reset_in = opts.auto_reset_secs.map(|s| s * TPS);
+                        let winner = world
+                            .winner
+                            .map(|id| world.players[id as usize].name.clone());
+                        // Leaderboard counts humans only; the winner feed can
+                        // name a bot (honest — bots do win sometimes).
+                        if let Some(state) = &opts.state {
+                            let results: Vec<(String, Option<u8>, u8)> = world
+                                .players
+                                .iter()
+                                .filter(|p| !p.is_bot)
+                                .map(|p| (p.name.clone(), p.placement, p.kills))
+                                .collect();
+                            if let Ok(mut g) = state.lock() {
+                                g.record_match(&results, winner.clone());
+                                g.phase = "results";
+                            }
+                        }
                         if opts.log {
-                            let winner = world
-                                .winner
-                                .map(|id| world.players[id as usize].name.clone())
-                                .unwrap_or_else(|| "nobody".into());
-                            println!("[over] {winner} won ({} players)", world.players.len());
+                            let w = winner.unwrap_or_else(|| "nobody".into());
+                            println!("[over] {w} won ({} players)", world.players.len());
                         }
                     }
                     if let Some(t) = reset_in {
@@ -595,6 +600,24 @@ fn unique_name(world: &World, base: String) -> String {
         }
     }
     base
+}
+
+/// Push live arena state to the web server's shared snapshot (arena only).
+fn push_status(
+    state: &Option<Arc<Mutex<ArenaState>>>,
+    phase: &'static str,
+    aboard: u8,
+    alive: u8,
+    starting_in: Option<u32>,
+) {
+    if let Some(s) = state {
+        if let Ok(mut g) = s.lock() {
+            g.phase = phase;
+            g.aboard = aboard;
+            g.alive = alive;
+            g.starting_in = starting_in;
+        }
+    }
 }
 
 fn lobby_humans(clients: &[Option<Client>]) -> usize {

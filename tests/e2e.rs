@@ -95,6 +95,8 @@ async fn arena_auto_starts_queues_and_resets() {
             auto_reset_secs: 1,
             ticket_file: None,
             http_port: None,
+            stats_file: None,
+            browser_play_url: None,
         }),
     )
     .await

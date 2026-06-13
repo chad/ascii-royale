@@ -60,16 +60,21 @@ enum Command {
         /// Write the join ticket here for launcher scripts to read.
         #[arg(long)]
         ticket_file: Option<std::path::PathBuf>,
-        /// Also publish the ticket over HTTP on this port (for `play` / the
-        /// boxd HTTPS proxy to fetch).
+        /// Serve the landing page + /ticket + /stats on this port.
         #[arg(long)]
         http_port: Option<u16>,
+        /// Persist the leaderboard here (survives restarts).
+        #[arg(long)]
+        stats_file: Option<std::path::PathBuf>,
+        /// "Play in your browser" link shown on the landing page.
+        #[arg(long)]
+        browser_play_url: Option<String>,
     },
 }
 
 /// The public arena's ticket endpoint (boxd HTTPS proxy → the arena's HTTP
 /// ticket server). `play` GETs this, then joins over iroh.
-const DEFAULT_ARENA: &str = "https://royale.boxd.sh/";
+const DEFAULT_ARENA: &str = "https://royale.boxd.sh/ticket";
 
 fn default_name() -> String {
     std::env::var("USER").unwrap_or_else(|_| "player".into())
@@ -130,7 +135,15 @@ fn main() -> Result<()> {
                 rt.block_on(host::start(HostOpts { name, bots, networked: false }))?;
             ui::tui::run(hosted.handle, None, true)?;
         }
-        Command::Serve { bots, auto_start_secs, auto_reset_secs, ticket_file, http_port } => {
+        Command::Serve {
+            bots,
+            auto_start_secs,
+            auto_reset_secs,
+            ticket_file,
+            http_port,
+            stats_file,
+            browser_play_url,
+        } => {
             return rt.block_on(async {
                 let ticket = host::serve(host::ServeOpts {
                     bots,
@@ -138,6 +151,8 @@ fn main() -> Result<()> {
                     auto_reset_secs,
                     ticket_file,
                     http_port,
+                    stats_file,
+                    browser_play_url,
                 })
                 .await?;
                 println!("[arena] ticket: {ticket}");

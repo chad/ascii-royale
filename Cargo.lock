@@ -189,6 +189,7 @@ dependencies = [
  "ratatui",
  "rodio",
  "serde",
+ "serde_json",
  "tokio",
  "ureq",
 ]
