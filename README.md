@@ -57,9 +57,12 @@ color, with 8-bit sound.*
 
 ## Features
 
-- **Peer-to-peer multiplayer** — one player hosts, friends join with a short
-  ticket string. iroh handles NAT holepunching; connections are direct QUIC
-  between machines. No server to run, nothing to sign up for.
+- **One-command matchmaking** — `ascii-royale play` drops you into the public
+  arena with whoever's around; no ticket, no account. Or host your own and
+  share a ticket. iroh handles NAT holepunching; connections are direct QUIC.
+- **Dropship lobby** — the match leaves on a countdown that *shortens* as more
+  humans board; ready up to launch early; bots fill the empty seats so the
+  island is always full. Nobody waits on a half-empty lobby.
 - **Real projectiles** — bullets fly cell by cell, leave tracer trails, and
   can be sidestepped. Walls and trees block shots; water blocks you.
 - **Auto-aim that keeps the skill** — fire snaps to the nearest enemy lined
@@ -89,6 +92,18 @@ cargo install --path .
 (or `cargo build --release` and grab `target/release/ascii-royale`)
 
 ## Play
+
+**Quickest — drop into the public arena with strangers, no ticket:**
+
+```sh
+ascii-royale play
+```
+
+It fetches the live arena ticket over HTTP and joins peer-to-peer. You land in
+the **dropship**: a countdown that shortens as more humans board, bots filling
+the empty seats. Hit `r` to ready up — when everyone aboard is ready, the drop
+leaves early. (The ticket fetch is the only thing that touches a server; the
+match itself is direct iroh p2p.)
 
 **Host a match** — you play too; the lobby shows a ticket to share:
 
@@ -140,6 +155,7 @@ ascii-royale solo --bots 9
 | `h` / `m` | use a medkit (+40 HP) |
 | `M` | mute / unmute sound |
 | `k` | key bindings screen (in the lobby) |
+| `r` | ready up in the dropship lobby (all ready → drop early) |
 | Enter | start the match (host, in lobby) |
 | `q` / Esc | quit |
 
@@ -188,20 +204,28 @@ you can also edit by hand (`fire = j space`). `r` resets the defaults.
 - Dying drops all your gear where you fall. Placement is decided the moment
   you die.
 
-## Run an arena (zero-install play over SSH)
+## Run an arena
 
-`ascii-royale serve` runs a headless arena: no local player, the match
-auto-starts ~20 s after the first human enters the lobby, bots fill the
-seats, and the lobby reopens after every match. Players arriving mid-match
-are queued for the next island, and the join ticket lands in a file:
+`ascii-royale serve` runs a headless arena: no local player, the dropship
+countdown starts when the first human boards, bots fill the seats, and the
+lobby reopens after every match. Players arriving mid-match are queued for the
+next island. Publish the ticket over HTTP so `ascii-royale play` can find it:
 
 ```sh
-ascii-royale serve --bots 7 --ticket-file /run/royale/ticket
+ascii-royale serve --bots 7 --http-port 8000 --ticket-file /run/royale/ticket
 ```
 
-Pair it with a locked-down SSH guest account and anyone with a terminal can
-play with **zero installation** — `ssh play@your-arena` drops them straight
-into the name prompt. `deploy/` has the complete recipe:
+Put that behind any HTTPS reverse proxy (the reference arena uses a boxd VM,
+whose `*.boxd.sh` proxy serves the ticket at `https://<vm>.boxd.sh/`). Point
+`play` at it with `--arena https://your-host/`, or bake your host in as the
+default. Gameplay never touches the proxy — it's direct iroh p2p — so the
+proxy only ever serves a 64-character string.
+
+### Optional: zero-install play over SSH
+
+Pair the arena with a locked-down SSH guest account and anyone with a terminal
+can play with **zero installation** — `ssh play@your-arena` drops them
+straight into the name prompt. `deploy/` has the complete recipe:
 
 - `royale-launcher` — forced command: pick a call sign, join, play again
 - `royale-arena.service` — systemd unit for the arena process

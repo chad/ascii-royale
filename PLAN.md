@@ -59,18 +59,22 @@ Status legend: [ ] todo · [x] done · [~] in progress
 
 ## Matchmaking — find others without sharing tickets (a → b)
 
-### (a) Published arena + one-command join — DO FIRST
-- [ ] arena publishes its current ticket over HTTP (boxd HTTPS proxy works for
-      HTTP — only 502'd before because it pointed at sshd). Tiny endpoint in
-      `serve`, or `serve` writes the ticket file + a minimal HTTP responder.
-- [ ] `ascii-royale play [--arena URL]` — GET the ticket, join. Default URL
-      baked in (the reference arena). One command, no ticket-sharing, no accounts.
-- [ ] README: "play with strangers: `ascii-royale play`"
+### (a) Published arena + one-command join — DONE
+- [x] `serve --http-port` runs a tiny dependency-free HTTP responder serving
+      the ticket (boxd HTTPS proxy carries it; gameplay stays iroh p2p)
+- [x] `ascii-royale play [--arena URL|ticket]` — GET the ticket, join. Default
+      arena URL baked in. One command, no ticket-sharing, no accounts.
+- [x] README: "play with strangers: `ascii-royale play`"
 
-### start-without-a-full-human-lobby UX  (feel chosen via question — see below)
-- [ ] implement chosen direction in `serve`'s lobby state machine
-- [ ] client rendering for it; new ClientMsg if a "ready" signal is needed
-- [ ] keep it server-authoritative (extends existing countdown, doesn't fight arch)
+### start-without-a-full-human-lobby UX — DONE (scheduled dropship + ready-up)
+- [x] dropship countdown in `serve`: 1 human = base secs, each extra shaves
+      base/5 down to a 5s floor; joiners only ever pull the clock in
+- [x] ClientMsg::Ready + all-aboard-ready launches early; Roster carries
+      aboard list (name/ready/is_you) + seats + starting_in
+- [x] client renders dropship: countdown bar, aboard+ready, [r] ready up
+- [x] server-authoritative (extends the existing countdown); tests for
+      shortening, all-ready, lobby-human counting; e2e arena lifecycle green
+- [ ] deploy to VM + verify `ascii-royale play` end-to-end over HTTPS
 
 ### (b) iroh-gossip well-known topic — DO SECOND
 - [ ] GATE: iroh-gossip is 0.100.0 vs our iroh 1.0.0-rc.1 — resolve version
