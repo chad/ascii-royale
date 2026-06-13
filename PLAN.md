@@ -42,17 +42,20 @@ Status legend: [ ] todo · [x] done · [~] in progress
 - [x] Rebindable keys: `k` config screen, ~/.config/ascii-royale/keys.conf
 - [x] README with captured frames, LICENSE, published to GitHub
 
-## SSH arena (boxd VM `royale`) — LIVE: ssh -p 22222 play@bore.pub
+## SSH arena (boxd VM `royale`) — arena LIVE, public ingress PENDING boxd
 - [x] `serve` mode + join queue + lifecycle (see above)
 - [x] VM created (royale, auto-suspend off), binary built & installed
 - [x] sshd on :2222 hardened; `play` guest (no password — none-auth works)
 - [x] royale-arena.service active, logs to /var/log/royale.log
-- [x] public ingress: bore-tunnel.service → bore.pub:22222 (boxd has no raw
-      TCP; bore.pub is a free community relay — swap to a boxd TCP port or
-      vanity domain later by replacing that one unit)
-- [x] verified from the public internet: keyless stranger → call sign → lobby
+- [x] verified end-to-end via the VM's local sshd (launcher → iroh join → lobby)
+- [!] bore.pub ABANDONED: unauthenticated shared ports → published 22222
+      pointed at another user's box. Removed; do NOT use shared relays here.
+- [→] chose: ask boxd for a public TCP port. Draft ready in
+      deploy/boxd-tcp-request.md — chad to send to contact@boxd.sh.
+- [ ] when granted: point TCP endpoint at VM :2222, publish
+      `ssh -p <port> play@royale.boxd.sh` + host-key fingerprint
+      (SHA256:MksQnpeWoT09c/zZGXGRDxNySe7wIoeWS1A542xxU/o) in README + repo desc
 - [ ] consider a cargo feature to build without rodio for headless servers
-- [ ] nicer long-term ingress: ask boxd for TCP ports (capability exists)
 
 ## Ideas for later (not started)
 - [ ] Spectate the killer instead of your corpse; match restart from results
