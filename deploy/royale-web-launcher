@@ -1,0 +1,8 @@
+#!/bin/bash
+# Browser-play entrypoint: ttyd runs this for each web visitor. Picks a random
+# call sign and drops them into the local arena (loopback HTTP ticket → iroh).
+set -u
+name="web$((RANDOM % 9000 + 1000))"
+# stderr → /dev/null silences libasound's "cannot find card" probe noise on
+# this headless VM (the game runs fine without audio; sound is a local nicety).
+exec /usr/local/bin/ascii-royale play --arena http://127.0.0.1:8000/ticket --name "$name" 2>/dev/null

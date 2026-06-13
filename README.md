@@ -93,7 +93,12 @@ cargo install --path .
 
 ## Play
 
-**Quickest — drop into the public arena with strangers, no ticket:**
+**In your browser — nothing to install:** open
+**[play.royale.boxd.sh](https://play.royale.boxd.sh)** (or the *play in your
+browser* button on **[royale.boxd.sh](https://royale.boxd.sh)**, which also has
+the live leaderboard). Pick a call sign and you're in the dropship.
+
+**From the terminal — one command, no ticket:**
 
 ```sh
 ascii-royale play
@@ -220,6 +225,26 @@ whose `*.boxd.sh` proxy serves the ticket at `https://<vm>.boxd.sh/`). Point
 `play` at it with `--arena https://your-host/`, or bake your host in as the
 default. Gameplay never touches the proxy — it's direct iroh p2p — so the
 proxy only ever serves a 64-character string.
+
+### Web front door (landing page, leaderboard, browser play)
+
+`--http-port` serves a designed landing page at `/`, the join ticket at
+`/ticket`, and live arena state + leaderboard as JSON at `/stats` (the page
+polls it). `--stats-file` persists the per-call-sign leaderboard across
+restarts; `--browser-play-url` adds a "play in your browser" button.
+
+```sh
+ascii-royale serve --bots 7 --http-port 8000 \
+  --ticket-file /run/royale/ticket \
+  --stats-file /var/lib/royale/stats.json \
+  --browser-play-url https://play.your-host/
+```
+
+Browser play itself is [ttyd](https://github.com/tsl0922/ttyd) running
+`ascii-royale play` per visitor, exposed on its own subdomain (it speaks
+WebSocket, which sails through an HTTPS proxy). `deploy/royale-ttyd.service`
++ `deploy/royale-web-launcher` are the recipe. Leaderboard call signs aren't
+authenticated — it's a wall of fame, not a ranked ladder.
 
 ### Optional: zero-install play over SSH
 

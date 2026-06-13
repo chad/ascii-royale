@@ -1,0 +1,16 @@
+[Unit]
+Description=ascii-royale browser play (ttyd web terminal)
+After=network-online.target royale-arena.service
+Wants=royale-arena.service
+
+[Service]
+# ttyd serves xterm.js over WebSocket; each browser tab gets a fresh game.
+# --writable lets players send input (off by default in 1.7); --max-clients
+# caps concurrent web players. Keep args simple — systemd mangles JSON values.
+ExecStart=/usr/bin/ttyd --writable --interface 0.0.0.0 --port 7681 --max-clients 12 -t fontSize=15 -t disableLeaveAlert=true /usr/local/bin/royale-web-launcher
+Restart=always
+RestartSec=5
+User=boxd
+
+[Install]
+WantedBy=multi-user.target

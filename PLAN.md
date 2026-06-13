@@ -78,10 +78,19 @@ Status legend: [ ] todo · [x] done · [~] in progress
       ticket live at https://royale.boxd.sh/; `ascii-royale play` verified
       end-to-end (fetch over HTTPS → iroh join → arena logged the join)
 
+### Web interface + browser play — DONE
+- [x] designed landing page at `/`, ticket moved to `/ticket`, live `/stats` JSON
+- [x] arena tracks per-call-sign leaderboard (wins/kills/games), persisted to
+      --stats-file; live status feed (boarding/countdown/live + counts)
+- [x] browser play: ttyd + royale-web-launcher on play.royale.boxd.sh subdomain;
+      WebSocket verified through the boxd HTTPS proxy (full chain: browser → WS →
+      ttyd → PTY → play → iroh → arena join logged)
+- [x] silenced libasound no-device noise in headless guest launchers
+- [x] deployed + verified: royale.boxd.sh (page/ticket/stats), play.royale.boxd.sh
+
 ### (b) iroh-gossip well-known topic — DO SECOND
-- [ ] GATE: iroh-gossip is 0.100.0 vs our iroh 1.0.0-rc.1 — resolve version
-      skew first (wait for gossip to track 1.0, or pin iroh, or evaluate
-      distributed-topic-tracker). Don't start (b) until this is settled.
+- [x] COMPAT RESOLVED: iroh-gossip 0.100.0 depends on iroh =1.0.0-rc.1 (exact
+      match to ours) — the "0.100 vs 1.0-rc" gap was a false alarm. NOT blocked.
 - [ ] hosts announce {ticket, name, slots, status, drop-countdown} on a fixed topic
 - [ ] `ascii-royale browse` — live list of open drops, pick one or auto-join soonest
 - [ ] decentralized: no central server, same iroh network, no signup

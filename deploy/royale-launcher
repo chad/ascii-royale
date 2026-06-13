@@ -26,7 +26,8 @@ while true; do
     if [ -z "$name" ]; then
         name="drifter$((RANDOM % 900 + 100))"
     fi
-    /usr/local/bin/ascii-royale join "$(cat "$TICKET_FILE")" --name "$name"
+    # stderr → /dev/null: hide libasound's no-audio-device probe noise.
+    /usr/local/bin/ascii-royale join "$(cat "$TICKET_FILE")" --name "$name" 2>/dev/null
     echo
     printf "  play again? [Y/n] "
     read -r again || exit 0
