@@ -7,7 +7,7 @@ use super::protocol::{recv_frame, send_frame, ClientMsg, ServerHandle, ServerMsg
 
 /// Dial a host by ticket (its iroh endpoint id), introduce ourselves, and
 /// return a handle the UI can treat exactly like a local server.
-pub async fn connect(ticket: &str, name: &str) -> Result<ServerHandle> {
+pub async fn connect(ticket: &str, name: &str, color: u32) -> Result<ServerHandle> {
     let host_id: EndpointId = ticket
         .trim()
         .parse()
@@ -23,7 +23,7 @@ pub async fn connect(ticket: &str, name: &str) -> Result<ServerHandle> {
         .context("connecting to host (are they still in the lobby?)")?;
     let (mut send, mut recv) = conn.open_bi().await?;
 
-    send_frame(&mut send, &ClientMsg::Hello { name: name.to_string() }).await?;
+    send_frame(&mut send, &ClientMsg::Hello { name: name.to_string(), color }).await?;
 
     let (srv_tx, srv_rx) = mpsc::channel::<ServerMsg>(64);
     let (cmd_tx, mut cmd_rx) = mpsc::channel::<ClientMsg>(64);

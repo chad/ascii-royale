@@ -26,7 +26,7 @@ const BOT_NAMES: &[&str] = &[
 /// identified by a stable `conn` slot, decoupled from player ids so the
 /// same connection can play many matches in a row.
 enum Inbound {
-    Join { name: String, reply: oneshot::Sender<JoinReply> },
+    Join { name: String, color: u32, reply: oneshot::Sender<JoinReply> },
     Msg { conn: usize, msg: ClientMsg },
     Disconnected { conn: usize },
 }
@@ -45,6 +45,8 @@ struct Client {
     player: Option<u8>,
     /// "Ready to drop" in the lobby; all-aboard-ready launches early.
     ready: bool,
+    /// 0xRRGGBB skin color, preserved across match resets.
+    color: u32,
 }
 
 /// Dropship countdown tuning (the "more jumpers = sooner drop" feel): with one
@@ -78,6 +80,8 @@ struct LoopOpts {
 
 pub struct HostOpts {
     pub name: String,
+    /// 0xRRGGBB skin color for the host's own player.
+    pub color: u32,
     pub bots: u8,
     /// When false (solo mode) no iroh endpoint is created at all.
     pub networked: bool,
@@ -150,7 +154,7 @@ pub async fn start(opts: HostOpts) -> Result<Hosted> {
     // The host's player joins like anyone else, minus the network.
     let (reply_tx, reply_rx) = oneshot::channel();
     inbound_tx
-        .send(Inbound::Join { name: opts.name, reply: reply_tx })
+        .send(Inbound::Join { name: opts.name, color: opts.color, reply: reply_tx })
         .await
         .ok()
         .context("game loop gone")?;
@@ -303,13 +307,17 @@ async fn handle_conn(
     let hello = tokio::time::timeout(Duration::from_secs(10), recv_frame::<ClientMsg>(&mut recv))
         .await
         .context("timed out waiting for hello")??;
-    let ClientMsg::Hello { name } = hello else {
+    let ClientMsg::Hello { name, color } = hello else {
         anyhow::bail!("expected hello");
     };
     let name = sanitize_name(&name);
 
     let (reply_tx, reply_rx) = oneshot::channel();
-    inbound.send(Inbound::Join { name, reply: reply_tx }).await.ok().context("loop gone")?;
+    inbound
+        .send(Inbound::Join { name, color, reply: reply_tx })
+        .await
+        .ok()
+        .context("loop gone")?;
     let (conn_id, mut out_rx) = match reply_rx.await? {
         JoinReply::Accepted { conn, welcome, rx } => {
             if let Some(welcome) = welcome {
@@ -371,7 +379,7 @@ async fn game_loop(opts: LoopOpts, mut inbound: mpsc::Receiver<Inbound>) {
             ev = inbound.recv() => {
                 let Some(ev) = ev else { return };
                 match ev {
-                    Inbound::Join { name, reply } => {
+                    Inbound::Join { name, color, reply } => {
                         if clients.iter().flatten().count() >= config.max_players as usize {
                             let _ = reply.send(JoinReply::Rejected {
                                 reason: "the arena is full — try again soon".into(),
@@ -390,6 +398,9 @@ async fn game_loop(opts: LoopOpts, mut inbound: mpsc::Receiver<Inbound>) {
                             });
                             continue;
                         }
+                        if let Some(id) = player {
+                            world.players[id as usize].color = color;
+                        }
                         let welcome = player.map(|id| ServerMsg::Welcome {
                             id,
                             map: world.map.clone(),
@@ -400,7 +411,7 @@ async fn game_loop(opts: LoopOpts, mut inbound: mpsc::Receiver<Inbound>) {
                             clients.len() - 1
                         });
                         let queued = player.is_none();
-                        clients[conn] = Some(Client { name: name.clone(), tx, player, ready: false });
+                        clients[conn] = Some(Client { name: name.clone(), tx, player, ready: false, color });
                         let _ = reply.send(JoinReply::Accepted { conn, welcome, rx });
                         if queued {
                             send_to(&clients, conn, ServerMsg::Waiting {
@@ -454,6 +465,22 @@ async fn game_loop(opts: LoopOpts, mut inbound: mpsc::Receiver<Inbound>) {
                                     } else {
                                         broadcast_roster(&world, &clients, start_in);
                                     }
+                                }
+                            }
+                            ClientMsg::SetProfile { name, color } => {
+                                // Name/skin changes only take in the lobby.
+                                if world.phase == MatchPhase::Lobby {
+                                    let name = sanitize_name(&name);
+                                    if let Some(c) = clients.get_mut(conn).and_then(Option::as_mut) {
+                                        c.name = name.clone();
+                                        c.color = color;
+                                        if let Some(pid) = c.player {
+                                            let unique = unique_name(&world, name);
+                                            world.players[pid as usize].name = unique;
+                                            world.players[pid as usize].color = color;
+                                        }
+                                    }
+                                    broadcast_roster(&world, &clients, start_in);
                                 }
                             }
                             _ => {}
@@ -615,6 +642,7 @@ fn reset_to_lobby(
         let name = unique_name(world, client.name.clone());
         client.player = world.add_player(name, false);
         if let Some(id) = client.player {
+            world.players[id as usize].color = client.color;
             let _ = client.tx.try_send(ServerMsg::Welcome {
                 id,
                 map: world.map.clone(),
@@ -708,13 +736,13 @@ fn broadcast_roster(world: &World, clients: &[Option<Client>], start_in: Option<
     let starting_in = start_in.map(|t| t / TPS);
     let seats = world.config.max_players;
     // Everyone aboard the dropship (humans; bots fill the rest silently at drop).
-    let base: Vec<(usize, String, bool)> = clients
+    let base: Vec<(usize, String, bool, u32)> = clients
         .iter()
         .enumerate()
         .filter_map(|(i, c)| {
             let c = c.as_ref()?;
             let pid = c.player?;
-            Some((i, world.players[pid as usize].name.clone(), c.ready))
+            Some((i, world.players[pid as usize].name.clone(), c.ready, c.color))
         })
         .collect();
     for (ci, client) in clients.iter().enumerate() {
@@ -724,7 +752,12 @@ fn broadcast_roster(world: &World, clients: &[Option<Client>], start_in: Option<
         }
         let aboard: Vec<Aboard> = base
             .iter()
-            .map(|(i, name, ready)| Aboard { name: name.clone(), ready: *ready, is_you: *i == ci })
+            .map(|(i, name, ready, color)| Aboard {
+                name: name.clone(),
+                ready: *ready,
+                is_you: *i == ci,
+                color: *color,
+            })
             .collect();
         let _ = client.tx.try_send(ServerMsg::Roster { aboard, seats, starting_in });
     }
@@ -736,7 +769,7 @@ mod tests {
 
     fn client(player: Option<u8>, ready: bool) -> Option<Client> {
         let (tx, _rx) = mpsc::channel(8);
-        Some(Client { name: "p".into(), tx, player, ready })
+        Some(Client { name: "p".into(), tx, player, ready, color: 0xffffff })
     }
 
     #[test]

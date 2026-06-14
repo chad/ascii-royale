@@ -26,6 +26,7 @@ async fn remote_player_joins_plays_and_disconnects() {
         Duration::from_secs(60),
         host::start(HostOpts {
             name: "hostess".into(),
+            color: 0xffffff,
             bots: 0,
             networked: true,
             announce: None,
@@ -43,7 +44,7 @@ async fn remote_player_joins_plays_and_disconnects() {
     };
 
     // Remote client dials by ticket.
-    let mut remote = timeout(Duration::from_secs(60), client::connect(&ticket, "wanderer"))
+    let mut remote = timeout(Duration::from_secs(60), client::connect(&ticket, "wanderer", 0xff8800))
         .await
         .expect("connect timed out")
         .expect("connect failed");
@@ -110,7 +111,7 @@ async fn arena_auto_starts_queues_and_resets() {
     .expect("serve failed");
 
     // First player joins the empty arena.
-    let mut alice = client::connect(&ticket, "alice").await.expect("alice connect");
+    let mut alice = client::connect(&ticket, "alice", 0xff8800).await.expect("alice connect");
     let ServerMsg::Welcome { .. } = next_msg(&mut alice).await else {
         panic!("alice should be welcomed into the lobby");
     };
@@ -124,7 +125,7 @@ async fn arena_auto_starts_queues_and_resets() {
     }
 
     // Bob arrives mid-match: he must be queued, not rejected.
-    let mut bob = client::connect(&ticket, "bob").await.expect("bob connect");
+    let mut bob = client::connect(&ticket, "bob", 0x00ff00).await.expect("bob connect");
     loop {
         match next_msg(&mut bob).await {
             ServerMsg::Waiting { .. } => break,

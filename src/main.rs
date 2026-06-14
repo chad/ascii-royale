@@ -4,7 +4,9 @@ use clap::{Parser, Subcommand};
 use ascii_royale::net;
 use ascii_royale::net::client;
 use ascii_royale::net::host::{self, HostOpts};
+use ascii_royale::net::protocol::parse_hex_color;
 use ascii_royale::ui;
+use ascii_royale::ui::profile::Profile;
 
 #[derive(Parser)]
 #[command(name = "ascii-royale", version, about = "Terminal battle royale, peer-to-peer over iroh")]
@@ -13,13 +15,25 @@ struct Cli {
     command: Command,
 }
 
+/// Name + skin flags shared by the player-facing subcommands. Either flag
+/// overrides the persisted profile (~/.config/ascii-royale/profile.conf) and,
+/// when set, is saved back so it sticks.
+#[derive(clap::Args)]
+struct Who {
+    /// Display name (defaults to your saved profile).
+    #[arg(long)]
+    name: Option<String>,
+    /// Skin color as a hex code, e.g. ff8800 (defaults to your saved profile).
+    #[arg(long)]
+    color: Option<String>,
+}
+
 #[derive(Subcommand)]
 enum Command {
     /// Host a match: prints a ticket friends can join with.
     Host {
-        /// Your display name.
-        #[arg(long, default_value_t = default_name())]
-        name: String,
+        #[command(flatten)]
+        who: Who,
         /// Bots added when the match starts.
         #[arg(long, default_value_t = 7)]
         bots: u8,
@@ -31,14 +45,14 @@ enum Command {
     Join {
         /// The ticket the host shared.
         ticket: String,
-        #[arg(long, default_value_t = default_name())]
-        name: String,
+        #[command(flatten)]
+        who: Who,
     },
     /// Find and join the public arena — no ticket needed. Fetches the
     /// current ticket over HTTP, then joins peer-to-peer over iroh.
     Play {
-        #[arg(long, default_value_t = default_name())]
-        name: String,
+        #[command(flatten)]
+        who: Who,
         /// Arena ticket URL (or a raw ticket). Defaults to the public arena.
         #[arg(long, default_value_t = DEFAULT_ARENA.to_string())]
         arena: String,
@@ -46,16 +60,16 @@ enum Command {
     /// Browse open games on the gossip lobby and join one — fully decentralized
     /// discovery, no ticket sharing.
     Browse {
-        #[arg(long, default_value_t = default_name())]
-        name: String,
+        #[command(flatten)]
+        who: Who,
         /// Bootstrap id URL (or a raw gossip id). Defaults to the public arena.
         #[arg(long, default_value_t = DEFAULT_LOBBY.to_string())]
         bootstrap: String,
     },
     /// Play offline against bots.
     Solo {
-        #[arg(long, default_value_t = default_name())]
-        name: String,
+        #[command(flatten)]
+        who: Who,
         #[arg(long, default_value_t = 9)]
         bots: u8,
     },
@@ -91,8 +105,27 @@ const DEFAULT_ARENA: &str = "https://royale.boxd.sh/ticket";
 /// The public arena's gossip bootstrap id endpoint.
 const DEFAULT_LOBBY: &str = "https://royale.boxd.sh/lobby";
 
-fn default_name() -> String {
-    std::env::var("USER").unwrap_or_else(|_| "player".into())
+/// Load the saved profile, apply any `--name`/`--color` overrides, and persist
+/// the result so the choice sticks for next time.
+fn resolve_profile(who: &Who) -> Profile {
+    let mut p = Profile::load();
+    let mut changed = false;
+    if let Some(name) = &who.name {
+        p.name = ascii_royale::ui::profile::sanitize_name(name);
+        changed = true;
+    }
+    if let Some(color) = &who.color {
+        if let Some(c) = parse_hex_color(color) {
+            p.color = c;
+            changed = true;
+        } else {
+            eprintln!("ignoring bad --color '{color}' (want a hex code like ff8800)");
+        }
+    }
+    if changed {
+        let _ = p.save();
+    }
+    p
 }
 
 /// Resolve an arena arg to a ticket: a raw ticket is used directly, anything
@@ -121,7 +154,8 @@ fn main() -> Result<()> {
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
 
     match cli.command {
-        Command::Host { name, bots, announce } => {
+        Command::Host { who, bots, announce } => {
+            let profile = resolve_profile(&who);
             eprintln!("binding iroh endpoint (waiting to be reachable)...");
             let announce = if announce {
                 eprintln!("fetching lobby bootstrap...");
@@ -130,31 +164,34 @@ fn main() -> Result<()> {
                 None
             };
             let hosted = rt.block_on(host::start(HostOpts {
-                name,
+                name: profile.name.clone(),
+                color: profile.color,
                 bots,
                 networked: true,
                 announce,
             }))?;
             let ticket = hosted.ticket.clone();
             if let Some(t) = &ticket {
-                // Also goes to scrollback so it survives the TUI session.
                 eprintln!("ticket: {t}");
             }
-            ui::tui::run(hosted.handle, ticket, true)?;
+            ui::tui::run(hosted.handle, ticket, true, profile)?;
         }
-        Command::Join { ticket, name } => {
+        Command::Join { ticket, who } => {
+            let profile = resolve_profile(&who);
             eprintln!("dialing host...");
-            let handle = rt.block_on(client::connect(&ticket, &name))?;
-            ui::tui::run(handle, None, false)?;
+            let handle = rt.block_on(client::connect(&ticket, &profile.name, profile.color))?;
+            ui::tui::run(handle, None, false, profile)?;
         }
-        Command::Play { name, arena } => {
+        Command::Play { who, arena } => {
+            let profile = resolve_profile(&who);
             eprintln!("finding the arena...");
             let ticket = resolve_ticket(&arena)?;
             eprintln!("dropping in...");
-            let handle = rt.block_on(client::connect(&ticket, &name))?;
-            ui::tui::run(handle, None, false)?;
+            let handle = rt.block_on(client::connect(&ticket, &profile.name, profile.color))?;
+            ui::tui::run(handle, None, false, profile)?;
         }
-        Command::Browse { name, bootstrap } => {
+        Command::Browse { who, bootstrap } => {
+            let profile = resolve_profile(&who);
             eprintln!("finding the lobby...");
             let boot = resolve_ticket(&bootstrap)?;
             let boot_id = boot.trim().parse().ok();
@@ -162,19 +199,21 @@ fn main() -> Result<()> {
             // Browse + pick happens in the TUI; it returns a chosen ticket.
             if let Some(ticket) = ui::tui::browse(listings)? {
                 eprintln!("dropping in...");
-                let handle = rt.block_on(client::connect(&ticket, &name))?;
-                ui::tui::run(handle, None, false)?;
+                let handle = rt.block_on(client::connect(&ticket, &profile.name, profile.color))?;
+                ui::tui::run(handle, None, false, profile)?;
             }
         }
-        Command::Solo { name, bots } => {
-            // Solo goes through the lobby too: that's where key config lives.
+        Command::Solo { who, bots } => {
+            let profile = resolve_profile(&who);
+            // Solo goes through the lobby too: that's where config lives.
             let hosted = rt.block_on(host::start(HostOpts {
-                name,
+                name: profile.name.clone(),
+                color: profile.color,
                 bots,
                 networked: false,
                 announce: None,
             }))?;
-            ui::tui::run(hosted.handle, None, true)?;
+            ui::tui::run(hosted.handle, None, true, profile)?;
         }
         Command::Serve {
             bots,

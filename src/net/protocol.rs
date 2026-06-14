@@ -14,13 +14,39 @@ const MAX_FRAME: u32 = 1 << 20;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ClientMsg {
-    /// First message on the stream.
-    Hello { name: String },
+    /// First message on the stream. `color` is a 0xRRGGBB skin color.
+    Hello { name: String, color: u32 },
     Input(InputCmd),
     /// Begin the match — only honored from the host's own local client.
     Start,
     /// Toggle/set "ready to drop" in the dropship lobby.
     Ready(bool),
+    /// Update name + skin color in the lobby.
+    SetProfile { name: String, color: u32 },
+}
+
+/// Parse a hex skin color like "ff8800" / "#ff8800" into 0xRRGGBB.
+pub fn parse_hex_color(s: &str) -> Option<u32> {
+    let s = s.trim().trim_start_matches('#');
+    if s.len() != 6 || !s.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    u32::from_str_radix(s, 16).ok()
+}
+
+/// A pleasant default skin for a player id, so unset players still look distinct.
+pub fn default_skin(id: u8) -> u32 {
+    const PALETTE: [u32; 8] = [
+        0xffd75f, // amber
+        0x7dcfff, // cyan
+        0xbb9af7, // violet
+        0x9ece6a, // green
+        0xff899d, // pink
+        0xff9e64, // orange
+        0x73daca, // teal
+        0xe0e0e0, // white
+    ];
+    PALETTE[(id as usize) % PALETTE.len()]
 }
 
 /// One combatant shown in the dropship lobby roster.
@@ -29,6 +55,7 @@ pub struct Aboard {
     pub name: String,
     pub ready: bool,
     pub is_you: bool,
+    pub color: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

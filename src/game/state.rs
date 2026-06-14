@@ -34,6 +34,8 @@ pub struct Player {
     pub name: String,
     pub is_bot: bool,
     pub connected: bool,
+    /// 0xRRGGBB skin color.
+    pub color: u32,
     pub pos: Pos,
     pub dir: Dir,
     pub hp: i32,
@@ -67,6 +69,7 @@ impl Player {
             name,
             is_bot,
             connected: true,
+            color: crate::net::protocol::default_skin(id),
             pos: (0, 0),
             dir: Dir::South,
             hp: MAX_HP,
@@ -712,6 +715,7 @@ impl World {
                 alive: me.alive,
                 kills: me.kills,
                 placement: me.placement,
+                color: me.color,
                 spectating,
             },
             alive: self.alive_count(),
@@ -719,7 +723,7 @@ impl World {
                 .players
                 .iter()
                 .filter(|p| p.alive && p.id != id && near(p.pos))
-                .map(|p| PlayerView { pos: p.pos, dir: p.dir, weapon: p.weapon })
+                .map(|p| PlayerView { pos: p.pos, dir: p.dir, weapon: p.weapon, color: p.color })
                 .collect(),
             bullets: self
                 .tracers
@@ -771,6 +775,8 @@ pub struct SelfView {
     pub alive: bool,
     pub kills: u8,
     pub placement: Option<u8>,
+    /// Your own skin color (0xRRGGBB).
+    pub color: u32,
     /// When dead and spectating, the name of whoever we're watching.
     pub spectating: Option<String>,
 }
@@ -780,6 +786,7 @@ pub struct PlayerView {
     pub pos: Pos,
     pub dir: Dir,
     pub weapon: WeaponKind,
+    pub color: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

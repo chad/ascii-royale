@@ -15,7 +15,9 @@ use crate::game::map::{Map, Tile};
 use crate::game::state::{EffectKind, InputCmd, Snapshot};
 use crate::game::Dir;
 use crate::net::protocol::{Aboard, ClientMsg, ServerHandle, ServerMsg, Standing};
+use crate::net::protocol::parse_hex_color;
 use crate::ui::keys::{Action, Keybinds};
+use crate::ui::profile::Profile;
 use crate::ui::sound::Sounds;
 
 const FEED_LINES: usize = 64;
@@ -53,6 +55,8 @@ pub struct App {
     sounds: Sounds,
     binds: Keybinds,
     keys_ui: Option<KeysUi>,
+    profile: Profile,
+    profile_ui: Option<ProfileUi>,
 }
 
 /// State of the key-rebinding overlay (opened with `k`).
@@ -61,9 +65,22 @@ struct KeysUi {
     awaiting: bool,
 }
 
+/// State of the name/skin editor (opened with `n`).
+struct ProfileUi {
+    /// 0 = name field, 1 = color field.
+    field: u8,
+    name: String,
+    color: String,
+}
+
 /// Run the whole client UI on the calling thread; network tasks keep
 /// running on the tokio runtime in the background.
-pub fn run(handle: ServerHandle, ticket: Option<String>, is_host: bool) -> Result<()> {
+pub fn run(
+    handle: ServerHandle,
+    ticket: Option<String>,
+    is_host: bool,
+    profile: Profile,
+) -> Result<()> {
     let mut app = App {
         handle,
         screen: Screen::Connecting,
@@ -82,6 +99,8 @@ pub fn run(handle: ServerHandle, ticket: Option<String>, is_host: bool) -> Resul
         sounds: Sounds::new(),
         binds: Keybinds::load(),
         keys_ui: None,
+        profile,
+        profile_ui: None,
     };
     let mut terminal = ratatui::init();
     let result = app.main_loop(&mut terminal);
@@ -287,11 +306,24 @@ impl App {
             self.on_keys_ui_key(code);
             return false;
         }
-        if code == KeyCode::Char('k')
-            && matches!(self.screen, Screen::Lobby | Screen::Results(_))
-        {
-            self.keys_ui = Some(KeysUi { selected: 0, awaiting: false });
+        // So does the name/skin editor.
+        if self.profile_ui.is_some() {
+            self.on_profile_ui_key(code);
             return false;
+        }
+        if matches!(self.screen, Screen::Lobby | Screen::Results(_)) {
+            if code == KeyCode::Char('k') {
+                self.keys_ui = Some(KeysUi { selected: 0, awaiting: false });
+                return false;
+            }
+            if code == KeyCode::Char('n') {
+                self.profile_ui = Some(ProfileUi {
+                    field: 0,
+                    name: self.profile.name.clone(),
+                    color: self.profile.hex(),
+                });
+                return false;
+            }
         }
         if self.binds.action_for(code) == Some(Action::Mute) {
             self.sounds.toggle_mute();
@@ -379,6 +411,66 @@ impl App {
         }
     }
 
+    fn on_profile_ui_key(&mut self, code: KeyCode) {
+        let Some(ui) = &mut self.profile_ui else { return };
+        match code {
+            KeyCode::Esc => self.profile_ui = None,
+            KeyCode::Tab | KeyCode::Up | KeyCode::Down => ui.field ^= 1,
+            KeyCode::Backspace => {
+                if ui.field == 0 {
+                    ui.name.pop();
+                } else {
+                    ui.color.pop();
+                }
+            }
+            KeyCode::Char(c) => {
+                if ui.field == 0 {
+                    if (c.is_alphanumeric() || c == '-' || c == '_') && ui.name.len() < 12 {
+                        ui.name.push(c);
+                    }
+                } else if c.is_ascii_hexdigit() && ui.color.len() < 6 {
+                    ui.color.push(c.to_ascii_lowercase());
+                }
+            }
+            KeyCode::Enter => {
+                // Save name + skin, persist locally, and tell the server.
+                let name = crate::ui::profile::sanitize_name(&ui.name);
+                let color = parse_hex_color(&ui.color).unwrap_or(self.profile.color);
+                self.profile.name = name.clone();
+                self.profile.color = color;
+                let _ = self.profile.save();
+                let _ = self.handle.tx.try_send(ClientMsg::SetProfile { name, color });
+                self.profile_ui = None;
+            }
+            _ => {}
+        }
+    }
+
+    fn draw_profile_ui(&self, f: &mut Frame, ui: &ProfileUi) {
+        let area = centered(f.area(), 46, 11);
+        f.render_widget(Clear, area);
+        let preview_color = parse_hex_color(&ui.color).unwrap_or(self.profile.color);
+        let cursor = |on: bool| if on { "_" } else { " " };
+        let name_line = format!("  name   [{}{}]", ui.name, cursor(ui.field == 0));
+        let color_line = format!("  skin   #[{}{}]", ui.color, cursor(ui.field == 1));
+        let lines = vec![
+            Line::raw(""),
+            Line::from(if ui.field == 0 { name_line.yellow().bold() } else { name_line.into() }),
+            Line::from(if ui.field == 1 { color_line.yellow().bold() } else { color_line.into() }),
+            Line::raw(""),
+            Line::from(vec![
+                "  preview  ".into(),
+                Span::styled("@", Style::new().fg(rgb(preview_color)).add_modifier(Modifier::BOLD)),
+                format!(" {}", ui.name).fg(rgb(preview_color)),
+            ]),
+            Line::raw(""),
+            Line::from("  tab switch · type to edit · enter save · esc cancel".dark_gray()),
+        ];
+        let p = Paragraph::new(lines)
+            .block(Block::bordered().title(" name & skin "));
+        f.render_widget(p, area);
+    }
+
     fn draw(&self, f: &mut Frame) {
         match &self.screen {
             Screen::Connecting => self.draw_center_box(f, "connecting", connecting_lines()),
@@ -407,6 +499,9 @@ impl App {
                     Line::from("press q to exit".dark_gray()),
                 ],
             ),
+        }
+        if let Some(ui) = &self.profile_ui {
+            self.draw_profile_ui(f, ui);
         }
         if let Some(ui) = &self.keys_ui {
             self.draw_keys_ui(f, ui);
@@ -509,7 +604,11 @@ impl App {
             let tag = if a.is_you { " (you)" } else { "" };
             let label = format!("  @ {}{tag}", a.name);
             let label = format!("{label:<20}");
-            let name_span = if a.is_you { label.yellow().bold() } else { label.into() };
+            // Each combatant's name wears their skin color.
+            let mut name_span = Span::styled(label, Style::new().fg(rgb(a.color)));
+            if a.is_you {
+                name_span = name_span.bold();
+            }
             let state = if a.ready { "ready".green() } else { "......".dark_gray() };
             lines.push(Line::from(vec![name_span, state]));
         }
@@ -517,16 +616,13 @@ impl App {
 
         // Action hint depends on mode.
         let ready_hint = if self.ready { "[r] unready" } else { "[r] ready up" };
+        let tail = "[n] name/skin · [k] keys · [q] quit";
         if self.starting_in.is_some() {
-            lines.push(Line::from(format!("{ready_hint} · [k] keys · [q] quit").dark_gray()));
+            lines.push(Line::from(format!("{ready_hint} · {tail}").dark_gray()));
         } else if self.is_host {
-            lines.push(Line::from(
-                format!("[enter] drop now · {ready_hint} · [k] keys · [q] quit").dark_gray(),
-            ));
+            lines.push(Line::from(format!("[enter] drop now · {ready_hint} · {tail}").dark_gray()));
         } else {
-            lines.push(Line::from(
-                format!("{ready_hint} · waiting for host · [k] keys · [q] quit").dark_gray(),
-            ));
+            lines.push(Line::from(format!("{ready_hint} · waiting for host · {tail}").dark_gray()));
         }
         let h = (lines.len() as u16 + 4).min(f.area().height);
         let area = centered(f.area(), 72, h);
@@ -977,11 +1073,11 @@ fn render_map(map: &Map, snap: &Snapshot, area: Rect, shake: (i32, i32), buf: &m
                 };
                 buf_set(cell, ch, color, modifier);
             }
-            if snap.players.iter().any(|p| p.pos == pos) {
-                buf_set(cell, '@', Color::Red, modifier);
+            if let Some(p) = snap.players.iter().find(|p| p.pos == pos) {
+                buf_set(cell, '@', rgb(p.color), modifier);
             }
             if pos == me && snap.you.alive {
-                buf_set(cell, '@', Color::Yellow, modifier);
+                buf_set(cell, '@', rgb(snap.you.color), modifier);
             } else if pos == me && snap.you.spectating.is_none() {
                 buf_set(cell, 'x', Color::DarkGray, modifier);
             }
@@ -994,11 +1090,16 @@ fn buf_set(cell: &mut ratatui::buffer::Cell, ch: char, fg: Color, modifier: Modi
     cell.set_style(Style::new().fg(fg).add_modifier(modifier));
 }
 
+/// 0xRRGGBB skin color → a ratatui truecolor.
+fn rgb(c: u32) -> Color {
+    Color::Rgb((c >> 16) as u8, (c >> 8) as u8, c as u8)
+}
+
 /// A small whole-island overview pinned to the top-right of the viewport:
 /// storm (blue), the next safe ring (cyan), you (yellow), nearby foes (red).
 fn draw_minimap(f: &mut Frame, view: Rect, map: &Map, snap: &Snapshot) {
-    const MW: u16 = 30;
-    const MH: u16 = 12;
+    const MW: u16 = 20;
+    const MH: u16 = 8;
     if view.width < MW + 4 || view.height < MH + 4 {
         return; // too cramped; skip it
     }
@@ -1037,17 +1138,17 @@ fn draw_minimap(f: &mut Frame, view: Rect, map: &Map, snap: &Snapshot) {
     if let Some(c) = buf.cell_mut((tx, ty)) {
         buf_set(c, 'o', Color::LightCyan, Modifier::BOLD);
     }
-    // Nearby foes.
+    // Nearby foes, in their skin colors.
     for p in &snap.players {
         let (cx, cy) = to_cell(p.pos.0, p.pos.1);
         if let Some(c) = buf.cell_mut((cx, cy)) {
-            buf_set(c, '!', Color::Red, Modifier::BOLD);
+            buf_set(c, '!', rgb(p.color), Modifier::BOLD);
         }
     }
     // You.
     let (cx, cy) = to_cell(snap.you.pos.0, snap.you.pos.1);
     if let Some(c) = buf.cell_mut((cx, cy)) {
-        buf_set(c, '@', Color::Yellow, Modifier::BOLD);
+        buf_set(c, '@', rgb(snap.you.color), Modifier::BOLD);
     }
 }
 
@@ -1079,6 +1180,8 @@ pub(crate) mod tests {
             sounds: Sounds::disabled(),
             binds: Keybinds::default(),
             keys_ui: None,
+            profile: Profile { name: "chad".into(), color: 0xffd75f },
+            profile_ui: None,
         }
     }
 
@@ -1101,7 +1204,12 @@ pub(crate) mod tests {
         names
             .iter()
             .enumerate()
-            .map(|(i, n)| Aboard { name: (*n).into(), ready: false, is_you: i == 0 })
+            .map(|(i, n)| Aboard {
+                name: (*n).into(),
+                ready: false,
+                is_you: i == 0,
+                color: 0xffffff,
+            })
             .collect()
     }
 
@@ -1219,6 +1327,34 @@ pub(crate) mod tests {
         roster[1].ready = true;
         app.on_server_msg(ServerMsg::Roster { aboard: roster, seats: 16, starting_in: Some(12) });
         println!("{}", frame_text(&app));
+    }
+
+    pub(super) fn print_profile_frame() {
+        let mut app = test_app();
+        let world = World::new(11, GameConfig::default());
+        app.on_server_msg(ServerMsg::Welcome { id: 0, map: world.map, config: world.config });
+        app.on_server_msg(ServerMsg::Roster { aboard: aboard(&["chad"]), seats: 16, starting_in: None });
+        app.on_key(KeyCode::Char('n'), KeyModifiers::NONE);
+        for c in "ace".chars() {
+            app.on_key(KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        app.on_key(KeyCode::Tab, KeyModifiers::NONE);
+        for c in "7dcfff".chars() {
+            app.on_key(KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        println!("{}", frame_text(&app));
+    }
+
+    #[test]
+    fn profile_editor_edits_name_and_color() {
+        let mut app = test_app();
+        let world = World::new(11, GameConfig::default());
+        app.on_server_msg(ServerMsg::Welcome { id: 0, map: world.map, config: world.config });
+        app.on_server_msg(ServerMsg::Roster { aboard: aboard(&["chad"]), seats: 16, starting_in: None });
+        app.on_key(KeyCode::Char('n'), KeyModifiers::NONE);
+        assert!(app.profile_ui.is_some(), "n opens the profile editor in lobby");
+        let text = frame_text(&app);
+        assert!(text.contains("name & skin") && text.contains("preview"));
     }
 
     pub(super) fn print_keys_frame() {
@@ -1343,5 +1479,11 @@ mod preview {
     #[ignore = "visual aid, run with --nocapture to see a frame"]
     fn print_keys_frame() {
         helpers::print_keys_frame();
+    }
+
+    #[test]
+    #[ignore = "visual aid, run with --nocapture to see a frame"]
+    fn print_profile_frame() {
+        helpers::print_profile_frame();
     }
 }
