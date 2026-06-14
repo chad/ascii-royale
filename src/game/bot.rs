@@ -181,6 +181,8 @@ fn wants(p: &super::state::Player, item: ItemKind) -> bool {
         ItemKind::Ammo(_) => p.ammo < 120,
         ItemKind::Medkit => p.medkits < 3,
         ItemKind::Vest => p.armor < 50,
+        ItemKind::Grenades(_) => p.grenades < 2,
+        ItemKind::Crate => true, // always worth grabbing
     }
 }
 

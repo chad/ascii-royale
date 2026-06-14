@@ -17,6 +17,7 @@ pub enum InputCmd {
     Fire,
     Pickup,
     Heal,
+    Throw,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -42,15 +43,21 @@ pub struct Player {
     pub medkits: u8,
     pub fire_cd: u8,
     pub heal_cd: u8,
+    pub grenades: u8,
     pub alive: bool,
     pub kills: u8,
     pub placement: Option<u8>,
+    /// Who killed us (for spectate-the-killer); None if the storm did.
+    pub killed_by: Option<u8>,
+    /// Tick of our most recent kill (for multi-kill callouts).
+    pub last_kill_tick: u64,
     pub brain: Option<BotBrain>,
     // Input intents, consumed each tick.
     pub queued_moves: VecDeque<Dir>,
     pub want_fire: bool,
     pub want_pickup: bool,
     pub want_heal: bool,
+    pub want_throw: bool,
 }
 
 impl Player {
@@ -67,16 +74,20 @@ impl Player {
             weapon: WeaponKind::Fists,
             ammo: 0,
             medkits: 0,
+            grenades: 0,
             fire_cd: 0,
             heal_cd: 0,
             alive: true,
             kills: 0,
             placement: None,
+            killed_by: None,
+            last_kill_tick: 0,
             brain: if is_bot { Some(BotBrain::default()) } else { None },
             queued_moves: VecDeque::new(),
             want_fire: false,
             want_pickup: false,
             want_heal: false,
+            want_throw: false,
         }
     }
 }
@@ -92,12 +103,31 @@ pub struct Bullet {
     pub weapon: WeaponKind,
 }
 
+/// A thrown grenade arcing toward where the player was facing.
+#[derive(Debug, Clone)]
+pub struct Grenade {
+    pub pos: Pos,
+    pub dir: Dir,
+    pub fuse: u8,
+    pub owner: u8,
+}
+
+/// Transient visual bursts, sent once and animated client-side.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum EffectKind {
+    /// Explosion shrapnel (grenades, deaths).
+    Blast,
+    /// A small hit spark where a bullet connects.
+    Spark,
+}
+
 pub struct World {
     pub tick: u64,
     pub map: Map,
     pub zone: Zone,
     pub players: Vec<Player>,
     pub bullets: Vec<Bullet>,
+    pub grenades: Vec<Grenade>,
     pub loot: HashMap<Pos, ItemKind>,
     pub phase: MatchPhase,
     pub config: GameConfig,
@@ -106,7 +136,11 @@ pub struct World {
     /// Every cell bullets crossed this tick (pos, dir, is_impact) — the
     /// client draws these as tracers so fast bullets stay visible.
     pub tracers: Vec<(Pos, Dir, bool)>,
+    /// One-shot visual bursts produced this tick.
+    pub effects: Vec<(Pos, EffectKind)>,
     pub winner: Option<u8>,
+    /// Tick the next supply drop is due (arena flavor).
+    next_drop: u64,
     rng: StdRng,
 }
 
@@ -122,12 +156,15 @@ impl World {
             zone,
             players: Vec::new(),
             bullets: Vec::new(),
+            grenades: Vec::new(),
             loot,
             phase: MatchPhase::Lobby,
             config,
             feed: Vec::new(),
             tracers: Vec::new(),
+            effects: Vec::new(),
             winner: None,
+            next_drop: 0,
             rng,
         }
     }
@@ -176,6 +213,8 @@ impl World {
             spawns.push(best);
             self.players[i].pos = best;
         }
+        // First supply drop ~35s in, then periodically (see step()).
+        self.next_drop = (35 * TPS) as u64;
         self.phase = MatchPhase::Countdown(3 * TPS);
     }
 
@@ -197,6 +236,7 @@ impl World {
             InputCmd::Fire => p.want_fire = true,
             InputCmd::Pickup => p.want_pickup = true,
             InputCmd::Heal => p.want_heal = true,
+            InputCmd::Throw => p.want_throw = true,
         }
     }
 
@@ -219,6 +259,7 @@ impl World {
         }
         self.tick += 1;
         self.tracers.clear();
+        self.effects.clear();
 
         self.think_bots();
 
@@ -274,6 +315,21 @@ impl World {
                     }
                 }
                 ItemKind::Vest => p.armor = p.armor.max(VEST_ARMOR),
+                ItemKind::Grenades(n) => {
+                    p.grenades = (p.grenades + n).min(super::items::MAX_GRENADES);
+                }
+                ItemKind::Crate => {
+                    // A top-tier loadout in one grab.
+                    if p.weapon.rank() < WeaponKind::Rifle.rank() {
+                        p.weapon = WeaponKind::Rifle;
+                    }
+                    p.ammo = (p.ammo + 60).min(MAX_AMMO);
+                    p.armor = p.armor.max(VEST_ARMOR);
+                    p.medkits = (p.medkits + 2).min(MAX_MEDKITS);
+                    p.grenades = (p.grenades + 2).min(super::items::MAX_GRENADES);
+                    let name = p.name.clone();
+                    self.feed.push(format!("{name} cracked a supply crate!"));
+                }
             }
         }
 
@@ -321,6 +377,24 @@ impl World {
             }
         }
 
+        // Throwing grenades.
+        for i in 0..self.players.len() {
+            if !self.players[i].alive || !std::mem::take(&mut self.players[i].want_throw) {
+                continue;
+            }
+            if self.players[i].grenades == 0 {
+                continue;
+            }
+            self.players[i].grenades -= 1;
+            let (pos, dir) = (self.players[i].pos, self.players[i].dir);
+            self.grenades.push(Grenade {
+                pos,
+                dir,
+                fuse: super::items::GRENADE_FUSE,
+                owner: i as u8,
+            });
+        }
+
         // Bullet flight, cell by cell so nothing is skipped over. Every cell
         // crossed becomes a tracer so the client can draw the full path.
         let mut bullets = std::mem::take(&mut self.bullets);
@@ -354,6 +428,30 @@ impl World {
         self.bullets = bullets;
         self.tracers = tracers;
 
+        // Grenade flight + fuse. They roll until they hit a wall, then sit and
+        // tick down; on zero fuse they burst with falloff area damage.
+        let mut grenades = std::mem::take(&mut self.grenades);
+        let mut blasts: Vec<(Pos, u8)> = Vec::new();
+        grenades.retain_mut(|g| {
+            for _ in 0..super::items::GRENADE_SPEED {
+                let to = g.dir.step(g.pos);
+                if self.map.in_bounds(to) && !self.map.get(to).blocks_shot() {
+                    g.pos = to;
+                }
+            }
+            g.fuse = g.fuse.saturating_sub(1);
+            if g.fuse == 0 {
+                blasts.push((g.pos, g.owner));
+                false
+            } else {
+                true
+            }
+        });
+        self.grenades = grenades;
+        for (center, owner) in blasts {
+            self.explode(center, Some(owner));
+        }
+
         // Storm.
         if self.zone.step(&mut self.rng) {
             self.feed.push(format!(
@@ -374,6 +472,17 @@ impl World {
             }
         }
 
+        // Supply drops: every ~45s, drop a crate at a walkable cell inside the
+        // safe circle to make a hotspot worth fighting over.
+        if self.tick >= self.next_drop && self.alive_count() > 1 {
+            self.next_drop = self.tick + (45 * TPS) as u64;
+            if let Some(spot) = self.drop_spot() {
+                self.loot.insert(spot, ItemKind::Crate);
+                self.effects.push((spot, EffectKind::Blast));
+                self.feed.push("A supply drop has landed inside the zone!".into());
+            }
+        }
+
         // Win condition.
         if self.phase == MatchPhase::Active && self.players.len() > 1 && self.alive_count() <= 1 {
             self.phase = MatchPhase::Over;
@@ -384,6 +493,49 @@ impl World {
             } else {
                 self.feed.push("Nobody survived the storm.".into());
             }
+        }
+    }
+
+    /// A walkable cell inside the current safe circle, for an airdrop.
+    fn drop_spot(&mut self) -> Option<Pos> {
+        for _ in 0..60 {
+            let p = self.map.random_walkable(&mut self.rng);
+            if self.zone.contains(p) && !self.loot.contains_key(&p) {
+                return Some(p);
+            }
+        }
+        None
+    }
+
+    /// Grenade/death burst: falloff damage in a radius + blast effects.
+    fn explode(&mut self, center: Pos, attacker: Option<u8>) {
+        let r = super::items::GRENADE_RADIUS;
+        // Scatter blast glyphs through the radius for the visual.
+        for dy in -r..=r {
+            for dx in -r..=r {
+                let p = (center.0 + dx, center.1 + dy);
+                if dx * dx + dy * dy <= r * r && self.map.in_bounds(p) {
+                    self.effects.push((p, EffectKind::Blast));
+                }
+            }
+        }
+        // Damage falls off linearly from the center.
+        let hits: Vec<(u8, i32)> = self
+            .players
+            .iter()
+            .filter(|q| q.alive)
+            .filter_map(|q| {
+                let d = (q.pos.0 - center.0).abs().max((q.pos.1 - center.1).abs());
+                if d <= r {
+                    let dmg = super::items::GRENADE_DAMAGE * (r + 1 - d) / (r + 1);
+                    Some((q.id, dmg))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        for (victim, dmg) in hits {
+            self.hit(attacker, victim, dmg, WeaponKind::Sniper);
         }
     }
 
@@ -452,18 +604,31 @@ impl World {
         let absorbed = v.armor.min(damage / 2);
         v.armor -= absorbed;
         v.hp -= damage - absorbed;
-        if v.hp <= 0 {
-            let vname = v.name.clone();
-            let line = match attacker {
-                Some(a) if a != victim => {
-                    self.players[a as usize].kills += 1;
-                    let aname = &self.players[a as usize].name;
-                    format!("{aname} eliminated {vname} ({})", weapon.stats().name)
-                }
-                _ => format!("{vname} died"),
-            };
-            self.kill(victim, line);
+        let vpos = v.pos;
+        if v.hp > 0 {
+            // Survived the hit: a spark where it landed.
+            self.effects.push((vpos, EffectKind::Spark));
+            return;
         }
+        let vname = self.players[victim as usize].name.clone();
+        let line = match attacker {
+            Some(a) if a != victim => {
+                let killer = &mut self.players[a as usize];
+                killer.kills += 1;
+                // Multi-kill: two eliminations within ~4s.
+                let multi = self.tick.saturating_sub(killer.last_kill_tick) <= 4 * TPS as u64
+                    && killer.last_kill_tick > 0;
+                killer.last_kill_tick = self.tick;
+                let aname = killer.name.clone();
+                if multi {
+                    self.feed.push(format!("{aname} is on a rampage!"));
+                }
+                self.players[victim as usize].killed_by = Some(a);
+                format!("{aname} eliminated {vname} ({})", weapon.stats().name)
+            }
+            _ => format!("{vname} died"),
+        };
+        self.kill(victim, line);
     }
 
     /// Mark a player dead, set placement, drop their gear, emit a feed line.
@@ -487,6 +652,13 @@ impl World {
         for _ in 0..p.medkits {
             drops.push(ItemKind::Medkit);
         }
+        if p.grenades > 0 {
+            drops.push(ItemKind::Grenades(p.grenades));
+        }
+        // A little death burst (visual only).
+        for (dx, dy) in [(0, 0), (1, 0), (-1, 0), (0, 1), (0, -1)] {
+            self.effects.push(((pos.0 + dx, pos.1 + dy), EffectKind::Blast));
+        }
         self.feed.push(feed_line);
         self.scatter_drops(pos, drops);
     }
@@ -509,23 +681,38 @@ impl World {
     /// Build the personalized, visibility-filtered view sent to one player.
     pub fn snapshot_for(&self, id: u8, feed: &[String]) -> Snapshot {
         let me = &self.players[id as usize];
+        // Dead players ride the camera on their killer (or any survivor).
+        let (cam, spectating) = if me.alive {
+            (me.pos, None)
+        } else {
+            let target = me
+                .killed_by
+                .filter(|&k| self.players[k as usize].alive)
+                .or_else(|| self.players.iter().find(|p| p.alive).map(|p| p.id));
+            match target {
+                Some(t) => (self.players[t as usize].pos, Some(self.players[t as usize].name.clone())),
+                None => (me.pos, None),
+            }
+        };
         let (vx, vy) = (self.config.view_x, self.config.view_y);
-        let near = |pos: Pos| (pos.0 - me.pos.0).abs() <= vx && (pos.1 - me.pos.1).abs() <= vy;
+        let near = |pos: Pos| (pos.0 - cam.0).abs() <= vx && (pos.1 - cam.1).abs() <= vy;
         Snapshot {
             tick: self.tick,
             you: SelfView {
-                pos: me.pos,
+                pos: cam,
                 dir: me.dir,
                 hp: me.hp.max(0),
                 armor: me.armor,
                 weapon: me.weapon,
                 ammo: me.ammo,
                 medkits: me.medkits,
+                grenades: me.grenades,
                 fire_cd: me.fire_cd,
                 heal_cd: me.heal_cd,
                 alive: me.alive,
                 kills: me.kills,
                 placement: me.placement,
+                spectating,
             },
             alive: self.alive_count(),
             players: self
@@ -540,6 +727,8 @@ impl World {
                 .filter(|(p, _, _)| near(*p))
                 .copied()
                 .collect(),
+            grenades: self.grenades.iter().filter(|g| near(g.pos)).map(|g| g.pos).collect(),
+            effects: self.effects.iter().filter(|(p, _)| near(*p)).copied().collect(),
             loot: self
                 .loot
                 .iter()
@@ -576,11 +765,14 @@ pub struct SelfView {
     pub weapon: WeaponKind,
     pub ammo: u16,
     pub medkits: u8,
+    pub grenades: u8,
     pub fire_cd: u8,
     pub heal_cd: u8,
     pub alive: bool,
     pub kills: u8,
     pub placement: Option<u8>,
+    /// When dead and spectating, the name of whoever we're watching.
+    pub spectating: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -609,6 +801,10 @@ pub struct Snapshot {
     pub players: Vec<PlayerView>,
     /// Tracer cells: every cell a bullet crossed this tick (pos, dir, impact).
     pub bullets: Vec<(Pos, Dir, bool)>,
+    /// In-flight grenades near you.
+    pub grenades: Vec<Pos>,
+    /// One-shot visual bursts this tick.
+    pub effects: Vec<(Pos, EffectKind)>,
     pub loot: Vec<(Pos, ItemKind)>,
     pub zone: ZoneView,
     pub feed: Vec<String>,
@@ -743,6 +939,88 @@ mod tests {
             w.step();
         }
         assert_eq!(w.players[0].ammo, 8, "second press should fire once ready");
+    }
+
+    #[test]
+    fn grenade_throw_explodes_and_damages_in_radius() {
+        let mut w = World::new(31, GameConfig::default());
+        w.add_player("thrower".into(), false);
+        w.add_player("victim".into(), false);
+        w.start_match();
+        while w.phase != MatchPhase::Active {
+            w.step();
+        }
+        // Grenade flies fuse×speed cells before bursting; seat the victim there.
+        let reach = crate::game::items::GRENADE_FUSE as i32 * crate::game::items::GRENADE_SPEED;
+        let (x, y) = clear_strip(&w.map, reach + 3);
+        w.players[0].pos = (x, y);
+        w.players[0].dir = Dir::East;
+        w.players[0].grenades = 1;
+        w.players[1].pos = (x + reach, y);
+        w.players[1].hp = 100;
+        w.players[1].armor = 0;
+
+        w.queue_input(0, InputCmd::Throw);
+        let mut blew = false;
+        for _ in 0..(crate::game::items::GRENADE_FUSE as usize + 4) {
+            w.step();
+            if w.players[1].hp < 100 {
+                blew = true;
+                break;
+            }
+            if w.phase == MatchPhase::Over {
+                break;
+            }
+        }
+        assert_eq!(w.players[0].grenades, 0, "the grenade should be consumed");
+        assert!(blew, "the grenade should damage a nearby player");
+        assert!(
+            w.effects.is_empty() || w.effects.iter().any(|(_, k)| *k == EffectKind::Blast),
+            "explosion should emit blast effects on the burst tick"
+        );
+    }
+
+    #[test]
+    fn supply_drop_lands_inside_the_zone() {
+        let mut w = World::new(8, GameConfig::default());
+        for n in ["a", "b"] {
+            w.add_player(n.into(), false);
+        }
+        w.start_match();
+        // Force a drop now.
+        w.next_drop = w.tick + 1;
+        let before = w.loot.values().filter(|i| matches!(i, ItemKind::Crate)).count();
+        for _ in 0..(15 * TPS as usize) {
+            w.step();
+            if w.loot.values().any(|i| matches!(i, ItemKind::Crate)) {
+                break;
+            }
+        }
+        let crates: Vec<Pos> = w
+            .loot
+            .iter()
+            .filter(|(_, i)| matches!(i, ItemKind::Crate))
+            .map(|(p, _)| *p)
+            .collect();
+        assert!(crates.len() > before, "a supply crate should have dropped");
+        assert!(w.zone.contains(crates[0]), "the crate must land inside the safe circle");
+    }
+
+    #[test]
+    fn crate_pickup_grants_a_loadout() {
+        let mut w = World::new(9, GameConfig::default());
+        w.add_player("a".into(), false);
+        w.start_match();
+        while w.phase != MatchPhase::Active {
+            w.step();
+        }
+        let pos = w.players[0].pos;
+        w.loot.insert(pos, ItemKind::Crate);
+        w.queue_input(0, InputCmd::Pickup);
+        w.step();
+        let p = &w.players[0];
+        assert!(p.weapon.rank() >= WeaponKind::Rifle.rank());
+        assert!(p.armor > 0 && p.medkits >= 2 && p.grenades >= 2);
     }
 
     #[test]

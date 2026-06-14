@@ -70,7 +70,12 @@ color, with 8-bit sound.*
   is the game.
 - **The storm** — a shrinking circle through 7 escalating phases, with the
   next safe ring drawn on the map.
-- **Six weapons** plus armor vests and medkits; kills drop everything.
+- **Six weapons, grenades, and airdrops** — throwables that burst for area
+  damage, plus periodic supply crates that drop a full loadout into the zone
+  and make a hotspot worth fighting over.
+- **Juice** — explosions and death bursts, hit sparks, screen-shake when you
+  take fire, multi-kill callouts, a live minimap, and spectate-your-killer
+  after you go down.
 - **Bots** with a survival brain (flee storm > fight > loot > wander), so a
   lobby of two is still a match of sixteen.
 - **Procedural 8-bit sound** — synthesized square-wave chiptune effects, no
@@ -164,6 +169,7 @@ ascii-royale solo --bots 9
 | `f` / space | fire — auto-aims at the nearest lined-up enemy, else along your `^ v < >` crosshair; pressing during cooldown fires the moment the weapon is ready |
 | `e` / `g` | pick up the item under you |
 | `h` / `m` | use a medkit (+40 HP) |
+| `t` | throw a grenade (arcs where you face, bursts with area damage) |
 | `M` | mute / unmute sound |
 | `k` | key bindings screen (in the lobby) |
 | `r` | ready up in the dropship lobby (all ready → drop early) |

@@ -17,11 +17,12 @@ pub enum Action {
     Fire,
     Pickup,
     Heal,
+    Throw,
     Mute,
 }
 
 impl Action {
-    pub const ALL: [Action; 8] = [
+    pub const ALL: [Action; 9] = [
         Action::Up,
         Action::Down,
         Action::Left,
@@ -29,6 +30,7 @@ impl Action {
         Action::Fire,
         Action::Pickup,
         Action::Heal,
+        Action::Throw,
         Action::Mute,
     ];
 
@@ -41,6 +43,7 @@ impl Action {
             Action::Fire => "fire",
             Action::Pickup => "pick up",
             Action::Heal => "heal",
+            Action::Throw => "throw grenade",
             Action::Mute => "mute",
         }
     }
@@ -54,6 +57,7 @@ impl Action {
             Action::Fire => "fire",
             Action::Pickup => "pickup",
             Action::Heal => "heal",
+            Action::Throw => "throw",
             Action::Mute => "mute",
         }
     }
@@ -69,7 +73,7 @@ pub const RESERVED: &[&str] = &["q", "k"];
 #[derive(Debug, Clone)]
 pub struct Keybinds {
     /// Key names per action, indexed in Action::ALL order.
-    keys: [Vec<String>; 8],
+    keys: [Vec<String>; 9],
 }
 
 impl Default for Keybinds {
@@ -83,6 +87,7 @@ impl Default for Keybinds {
                 vec!["f".into(), "space".into()],
                 vec!["e".into(), "g".into()],
                 vec!["h".into(), "m".into()],
+                vec!["t".into()],
                 vec!["M".into()],
             ],
         }

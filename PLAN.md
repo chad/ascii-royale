@@ -124,6 +124,16 @@ Wrong layer for anonymous matchmaking (second overlay network + identity
 requirement fights the no-signup ethos). Reserve Freeq for a future *social*
 layer (DM-to-invite, challenges, community feed) if that becomes a goal.
 
+## "Make it badass" sprint (before the team's topic-tracker upgrade)
+Each its own commit; build+clippy+tests green before moving on.
+- [ ] Supply drops: periodic airdrop crates with premium loot, map markers + feed
+- [ ] Grenades: throwable arc, area explosion, new throw input + sound
+- [ ] Combat juice: death explosions, hit-flash, screen shake, multi-kill feed
+- [ ] Minimap: corner overview (storm circle, you, nearby blips)
+- [ ] Spectate the killer after you die (not just your corpse)
+- [ ] Map character: named POIs / "near the Docks" locator
+- [ ] (stretch) weapon rarity tiers / reload; killstreak announces
+
 ## Ideas for later (not started)
 - [ ] Spectate the killer instead of your corpse; match restart from results
 - [ ] Shotgun spread / diagonal aiming; throwables; airdrops

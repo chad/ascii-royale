@@ -107,7 +107,8 @@ fn render_frame(
         map: &world.map,
         snap,
         feed,
-        controls: "wasd/arrows move+aim · f fire · e pickup · h heal · M mute · q quit".into(),
+        controls: "wasd move · f fire · e pickup · h heal · t grenade · q quit".into(),
+        shake: (0, 0),
     };
     terminal.draw(|f| view.draw(f))?;
     Ok(rasterize(terminal.backend().buffer(), palette))

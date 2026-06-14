@@ -12,7 +12,7 @@ use ratatui::Frame;
 
 use crate::game::items::ItemKind;
 use crate::game::map::{Map, Tile};
-use crate::game::state::{InputCmd, Snapshot};
+use crate::game::state::{EffectKind, InputCmd, Snapshot};
 use crate::game::Dir;
 use crate::net::protocol::{Aboard, ClientMsg, ServerHandle, ServerMsg, Standing};
 use crate::ui::keys::{Action, Keybinds};
@@ -48,6 +48,8 @@ pub struct App {
     ready: bool,
     feed: VecDeque<String>,
     link_lost: bool,
+    /// Frames of screen-shake left (set on damage / nearby blast).
+    shake: u8,
     sounds: Sounds,
     binds: Keybinds,
     keys_ui: Option<KeysUi>,
@@ -76,6 +78,7 @@ pub fn run(handle: ServerHandle, ticket: Option<String>, is_host: bool) -> Resul
         ready: false,
         feed: VecDeque::new(),
         link_lost: false,
+        shake: 0,
         sounds: Sounds::new(),
         binds: Keybinds::load(),
         keys_ui: None,
@@ -192,6 +195,7 @@ impl App {
             }
 
             terminal.draw(|f| self.draw(f))?;
+            self.shake = self.shake.saturating_sub(1);
 
             if event::poll(Duration::from_millis(33))? {
                 if let Event::Key(key) = event::read()? {
@@ -234,6 +238,19 @@ impl App {
                 }
                 self.feed.truncate(FEED_LINES);
                 self.sounds.on_snapshot(self.snap.as_ref(), &snap);
+                // Kick the screen-shake on damage taken or a nearby blast.
+                let took_dmg = self
+                    .snap
+                    .as_ref()
+                    .is_some_and(|p| snap.you.alive && snap.you.hp < p.you.hp);
+                let near_blast = snap.you.alive
+                    && snap.effects.iter().any(|(p, k)| {
+                        matches!(k, EffectKind::Blast)
+                            && (p.0 - snap.you.pos.0).abs().max((p.1 - snap.you.pos.1).abs()) <= 4
+                    });
+                if took_dmg || near_blast {
+                    self.shake = 4;
+                }
                 self.snap = Some(*snap);
                 if matches!(self.screen, Screen::Lobby | Screen::Connecting) {
                     self.screen = Screen::Game;
@@ -308,6 +325,7 @@ impl App {
                     Some(Action::Fire) => Some(InputCmd::Fire),
                     Some(Action::Pickup) => Some(InputCmd::Pickup),
                     Some(Action::Heal) => Some(InputCmd::Heal),
+                    Some(Action::Throw) => Some(InputCmd::Throw),
                     Some(Action::Mute) | None => None,
                 };
                 if let Some(cmd) = cmd {
@@ -558,7 +576,7 @@ impl App {
             format!(" · {} mute", b.keys_label(Action::Mute))
         };
         let controls = format!(
-            "{}{}{}{}/arrows move+aim · {} fire · {} pickup · {} heal{sound} · q quit",
+            "{}{}{}{}/arrows move · {} fire · {} pickup · {} heal · {} grenade{sound} · q quit",
             b.keys_label(Action::Up),
             b.keys_label(Action::Left),
             b.keys_label(Action::Down),
@@ -566,8 +584,15 @@ impl App {
             b.keys_label(Action::Fire),
             b.keys_label(Action::Pickup),
             b.keys_label(Action::Heal),
+            b.keys_label(Action::Throw),
         );
-        GameView { map, snap, feed: &self.feed, controls }.draw(f);
+        // Jitter the camera a cell while shaking for a punchy hit feel.
+        let shake = if self.shake > 0 {
+            (((self.shake % 2) as i32) * 2 - 1, ((self.shake / 2 % 2) as i32) * 2 - 1)
+        } else {
+            (0, 0)
+        };
+        GameView { map, snap, feed: &self.feed, controls, shake }.draw(f);
     }
 }
 
@@ -578,6 +603,8 @@ pub struct GameView<'a> {
     pub snap: &'a Snapshot,
     pub feed: &'a VecDeque<String>,
     pub controls: String,
+    /// Camera jitter offset for screen-shake (0,0 when calm).
+    pub shake: (i32, i32),
 }
 
 impl GameView<'_> {
@@ -591,7 +618,8 @@ impl GameView<'_> {
         let map_block = Block::bordered().title(" the island ");
         let inner = map_block.inner(map_area);
         f.render_widget(map_block, map_area);
-        render_map(map, snap, inner, f.buffer_mut());
+        render_map(map, snap, inner, self.shake, f.buffer_mut());
+        draw_minimap(f, inner, map, snap);
 
         self.draw_sidebar(f, side, snap);
 
@@ -615,13 +643,11 @@ impl GameView<'_> {
                 .map(|p| format!("#{p}"))
                 .unwrap_or_default();
             let area = Rect { x: inner.x, y: inner.y, width: inner.width, height: 1 };
-            let p = Paragraph::new(
-                format!(" ELIMINATED {place} — spectating your corpse · q to leave ")
-                    .red()
-                    .bold(),
-            )
-            .centered();
-            f.render_widget(p, area);
+            let banner = match &snap.you.spectating {
+                Some(name) => format!(" ELIMINATED {place} — spectating {name} · q to leave "),
+                None => format!(" ELIMINATED {place} — q to leave "),
+            };
+            f.render_widget(Paragraph::new(banner.red().bold()).centered(), area);
         }
     }
 
@@ -696,6 +722,12 @@ impl GameView<'_> {
             format!("medkits {}", you.medkits).into(),
             if you.heal_cd > 0 { "  (cooling)".dark_gray() } else { "  [h]".dark_gray() },
         ]));
+        let nade = if you.grenades > 0 {
+            format!("grenades {}", you.grenades).light_green()
+        } else {
+            "grenades 0".dark_gray()
+        };
+        lines.push(Line::from(vec![nade, "  [t]".dark_gray()]));
         lines.push(Line::raw(""));
 
         // Storm status.
@@ -837,17 +869,19 @@ fn item_cell(item: ItemKind) -> (char, Color) {
         ItemKind::Ammo(_) => ('=', Color::Yellow),
         ItemKind::Medkit => ('+', Color::Red),
         ItemKind::Vest => (']', Color::Cyan),
+        ItemKind::Grenades(_) => ('!', Color::LightGreen),
+        ItemKind::Crate => ('$', Color::LightYellow),
     }
 }
 
-fn render_map(map: &Map, snap: &Snapshot, area: Rect, buf: &mut Buffer) {
+fn render_map(map: &Map, snap: &Snapshot, area: Rect, shake: (i32, i32), buf: &mut Buffer) {
     if area.width == 0 || area.height == 0 {
         return;
     }
     let (vw, vh) = (area.width as i32, area.height as i32);
     let me = snap.you.pos;
-    let cam_x = (me.0 - vw / 2).clamp(0, (map.w - vw).max(0));
-    let cam_y = (me.1 - vh / 2).clamp(0, (map.h - vh).max(0));
+    let cam_x = (me.0 - vw / 2 + shake.0).clamp(0, (map.w - vw).max(0));
+    let cam_y = (me.1 - vh / 2 + shake.1).clamp(0, (map.h - vh).max(0));
     let z = &snap.zone;
 
     for sy in 0..vh {
@@ -900,6 +934,9 @@ fn render_map(map: &Map, snap: &Snapshot, area: Rect, buf: &mut Buffer) {
                 let (ch, color) = item_cell(*item);
                 buf_set(cell, ch, color, modifier);
             }
+            if snap.grenades.contains(&pos) {
+                buf_set(cell, 'o', Color::LightGreen, modifier);
+            }
             if let Some((_, dir, impact)) = snap
                 .bullets
                 .iter()
@@ -916,12 +953,20 @@ fn render_map(map: &Map, snap: &Snapshot, area: Rect, buf: &mut Buffer) {
                 };
                 buf_set(cell, ch, Color::Yellow, modifier);
             }
+            // Explosion shrapnel / sparks draw boldly over most things.
+            if let Some((_, kind)) = snap.effects.iter().find(|(p, _)| *p == pos) {
+                let (ch, color) = match kind {
+                    EffectKind::Blast => ('*', Color::LightRed),
+                    EffectKind::Spark => ('·', Color::LightYellow),
+                };
+                buf_set(cell, ch, color, modifier);
+            }
             if snap.players.iter().any(|p| p.pos == pos) {
                 buf_set(cell, '@', Color::Red, modifier);
             }
             if pos == me && snap.you.alive {
                 buf_set(cell, '@', Color::Yellow, modifier);
-            } else if pos == me {
+            } else if pos == me && snap.you.spectating.is_none() {
                 buf_set(cell, 'x', Color::DarkGray, modifier);
             }
         }
@@ -931,6 +976,63 @@ fn render_map(map: &Map, snap: &Snapshot, area: Rect, buf: &mut Buffer) {
 fn buf_set(cell: &mut ratatui::buffer::Cell, ch: char, fg: Color, modifier: Modifier) {
     cell.set_char(ch);
     cell.set_style(Style::new().fg(fg).add_modifier(modifier));
+}
+
+/// A small whole-island overview pinned to the top-right of the viewport:
+/// storm (blue), the next safe ring (cyan), you (yellow), nearby foes (red).
+fn draw_minimap(f: &mut Frame, view: Rect, map: &Map, snap: &Snapshot) {
+    const MW: u16 = 30;
+    const MH: u16 = 12;
+    if view.width < MW + 4 || view.height < MH + 4 {
+        return; // too cramped; skip it
+    }
+    let area = Rect { x: view.x + view.width - MW - 2, y: view.y, width: MW + 2, height: MH + 2 };
+    f.render_widget(Clear, area);
+    let block = Block::bordered().title("map").border_style(Style::new().dark_gray());
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    let buf = f.buffer_mut();
+    let z = &snap.zone;
+    let to_cell = |wx: i32, wy: i32| -> (u16, u16) {
+        let mx = (wx * inner.width as i32 / map.w).clamp(0, inner.width as i32 - 1) as u16;
+        let my = (wy * inner.height as i32 / map.h).clamp(0, inner.height as i32 - 1) as u16;
+        (inner.x + mx, inner.y + my)
+    };
+    // Storm wash + safe ring background.
+    for my in 0..inner.height {
+        for mx in 0..inner.width {
+            let wx = (mx as i32 + 1) * map.w / inner.width as i32;
+            let wy = (my as i32 + 1) * map.h / inner.height as i32;
+            let dx = wx as f32 - z.center.0;
+            let dy = wy as f32 - z.center.1;
+            let outside = dx * dx + dy * dy > z.radius * z.radius;
+            if let Some(c) = buf.cell_mut((inner.x + mx, inner.y + my)) {
+                if outside {
+                    buf_set(c, '░', Color::Blue, Modifier::DIM);
+                } else {
+                    // Faint radar texture so the safe area always reads as land.
+                    buf_set(c, '·', Color::DarkGray, Modifier::DIM);
+                }
+            }
+        }
+    }
+    // Next safe-circle marker.
+    let (tx, ty) = to_cell(z.target_center.0 as i32, z.target_center.1 as i32);
+    if let Some(c) = buf.cell_mut((tx, ty)) {
+        buf_set(c, 'o', Color::LightCyan, Modifier::BOLD);
+    }
+    // Nearby foes.
+    for p in &snap.players {
+        let (cx, cy) = to_cell(p.pos.0, p.pos.1);
+        if let Some(c) = buf.cell_mut((cx, cy)) {
+            buf_set(c, '!', Color::Red, Modifier::BOLD);
+        }
+    }
+    // You.
+    let (cx, cy) = to_cell(snap.you.pos.0, snap.you.pos.1);
+    if let Some(c) = buf.cell_mut((cx, cy)) {
+        buf_set(c, '@', Color::Yellow, Modifier::BOLD);
+    }
 }
 
 #[cfg(test)]
@@ -957,6 +1059,7 @@ pub(crate) mod tests {
             ready: false,
             feed: VecDeque::new(),
             link_lost: false,
+            shake: 0,
             sounds: Sounds::disabled(),
             binds: Keybinds::default(),
             keys_ui: None,

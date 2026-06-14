@@ -98,6 +98,27 @@ impl Sounds {
             if you.kills > old.kills {
                 self.play(chirp(&[(784.0, 60), (988.0, 60), (1175.0, 120)], 0.3));
             }
+            // Threw a grenade.
+            if you.grenades < old.grenades {
+                self.play(sweep(520.0, 900.0, 120, 0.18));
+            }
+        }
+
+        // Explosions near you (grenade bursts / deaths): a low noisy boom,
+        // louder the closer the nearest blast lands.
+        if you.alive {
+            let nearest = snap
+                .effects
+                .iter()
+                .filter(|(_, k)| matches!(k, crate::game::state::EffectKind::Blast))
+                .map(|(p, _)| (p.0 - you.pos.0).abs().max((p.1 - you.pos.1).abs()))
+                .min();
+            if let Some(d) = nearest {
+                if d <= 18 {
+                    let vol = 0.35 * (1.0 - d as f32 / 22.0);
+                    self.play(mix(noise(180, vol), sweep(260.0, 70.0, 180, vol * 0.7)));
+                }
+            }
         }
 
         // You died.

@@ -61,6 +61,10 @@ pub enum ItemKind {
     Ammo(u16),
     Medkit,
     Vest,
+    /// A bundle of grenades.
+    Grenades(u8),
+    /// Airdrop crate: grants a top-tier loadout in one grab.
+    Crate,
 }
 
 impl ItemKind {
@@ -70,15 +74,24 @@ impl ItemKind {
             ItemKind::Ammo(n) => format!("Ammo x{n}"),
             ItemKind::Medkit => "Medkit".to_string(),
             ItemKind::Vest => "Vest".to_string(),
+            ItemKind::Grenades(n) => format!("Grenades x{n}"),
+            ItemKind::Crate => "Supply Crate".to_string(),
         }
     }
 }
 
 pub const MAX_AMMO: u16 = 240;
 pub const MAX_MEDKITS: u8 = 5;
+pub const MAX_GRENADES: u8 = 4;
 pub const MAX_HP: i32 = 100;
 pub const MEDKIT_HEAL: i32 = 40;
 pub const VEST_ARMOR: i32 = 100;
+
+// Grenade tuning.
+pub const GRENADE_FUSE: u8 = 8; // ticks airborne before it bursts
+pub const GRENADE_SPEED: i32 = 2; // cells/tick
+pub const GRENADE_RADIUS: i32 = 3;
+pub const GRENADE_DAMAGE: i32 = 60; // at the center, falls off with distance
 
 fn roll_item(rng: &mut StdRng) -> ItemKind {
     match rng.random_range(0..100) {
@@ -87,8 +100,9 @@ fn roll_item(rng: &mut StdRng) -> ItemKind {
         27..37 => ItemKind::Weapon(WeaponKind::Shotgun),
         37..45 => ItemKind::Weapon(WeaponKind::Rifle),
         45..49 => ItemKind::Weapon(WeaponKind::Sniper),
-        49..74 => ItemKind::Ammo(30),
-        74..90 => ItemKind::Medkit,
+        49..70 => ItemKind::Ammo(30),
+        70..84 => ItemKind::Medkit,
+        84..92 => ItemKind::Grenades(2),
         _ => ItemKind::Vest,
     }
 }
