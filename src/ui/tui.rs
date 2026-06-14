@@ -317,11 +317,9 @@ impl App {
                 return false;
             }
             if code == KeyCode::Char('n') {
-                self.profile_ui = Some(ProfileUi {
-                    field: 0,
-                    name: self.profile.name.clone(),
-                    color: self.profile.hex(),
-                });
+                // Start with empty fields (current values shown as placeholders)
+                // so typing replaces rather than appends.
+                self.profile_ui = Some(ProfileUi { field: 0, name: String::new(), color: String::new() });
                 return false;
             }
         }
@@ -433,8 +431,12 @@ impl App {
                 }
             }
             KeyCode::Enter => {
-                // Save name + skin, persist locally, and tell the server.
-                let name = crate::ui::profile::sanitize_name(&ui.name);
+                // Blank field = keep the current value (placeholders show it).
+                let name = if ui.name.trim().is_empty() {
+                    self.profile.name.clone()
+                } else {
+                    crate::ui::profile::sanitize_name(&ui.name)
+                };
                 let color = parse_hex_color(&ui.color).unwrap_or(self.profile.color);
                 self.profile.name = name.clone();
                 self.profile.color = color;
@@ -447,27 +449,42 @@ impl App {
     }
 
     fn draw_profile_ui(&self, f: &mut Frame, ui: &ProfileUi) {
-        let area = centered(f.area(), 46, 11);
+        let area = centered(f.area(), 50, 12);
         f.render_widget(Clear, area);
-        let preview_color = parse_hex_color(&ui.color).unwrap_or(self.profile.color);
-        let cursor = |on: bool| if on { "_" } else { " " };
-        let name_line = format!("  name   [{}{}]", ui.name, cursor(ui.field == 0));
-        let color_line = format!("  skin   #[{}{}]", ui.color, cursor(ui.field == 1));
+        // Empty fields show the current value as a dim placeholder; what you
+        // type replaces it, and leaving it blank keeps the current value.
+        let eff_name = if ui.name.is_empty() { self.profile.name.clone() } else { ui.name.clone() };
+        let eff_color = parse_hex_color(&ui.color).unwrap_or(self.profile.color);
+        let cursor = |on: bool| if on { "_" } else { "" };
+        let field_span = |val: &str, placeholder: &str, active: bool| -> Span<'static> {
+            if val.is_empty() {
+                Span::styled(format!("{placeholder}{}", cursor(active)), Style::new().fg(Color::DarkGray))
+            } else {
+                let s = format!("{val}{}", cursor(active));
+                if active { s.yellow().bold() } else { s.into() }
+            }
+        };
         let lines = vec![
             Line::raw(""),
-            Line::from(if ui.field == 0 { name_line.yellow().bold() } else { name_line.into() }),
-            Line::from(if ui.field == 1 { color_line.yellow().bold() } else { color_line.into() }),
+            Line::from(vec![
+                "  name   ".into(),
+                field_span(&ui.name, &self.profile.name, ui.field == 0),
+            ]),
+            Line::from(vec![
+                "  skin  #".into(),
+                field_span(&ui.color, &self.profile.hex(), ui.field == 1),
+            ]),
             Line::raw(""),
             Line::from(vec![
                 "  preview  ".into(),
-                Span::styled("@", Style::new().fg(rgb(preview_color)).add_modifier(Modifier::BOLD)),
-                format!(" {}", ui.name).fg(rgb(preview_color)),
+                Span::styled("@", Style::new().fg(rgb(eff_color)).add_modifier(Modifier::BOLD)),
+                format!(" {eff_name}").fg(rgb(eff_color)),
             ]),
             Line::raw(""),
-            Line::from("  tab switch · type to edit · enter save · esc cancel".dark_gray()),
+            Line::from("  blank keeps current value".dark_gray()),
+            Line::from("  tab switch · type to replace · enter save · esc cancel".dark_gray()),
         ];
-        let p = Paragraph::new(lines)
-            .block(Block::bordered().title(" name & skin "));
+        let p = Paragraph::new(lines).block(Block::bordered().title(" name & skin "));
         f.render_widget(p, area);
     }
 
