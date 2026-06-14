@@ -133,6 +133,9 @@ layer (DM-to-invite, challenges, community feed) if that becomes a goal.
 - [x] 34 sim+UI tests green, clippy clean, gameplay GIF regenerated
 - [x] deployed + verified live: full match ran to a winner on the arena with
       grenades/drops/effects active; royale.boxd.sh serves the new build + GIF
+- [x] persistent name + hex-color skins (local profile.conf + in-game `n`
+      editor + flags; web localStorage via /play intake + ttyd -a); skins render
+      on map/minimap/roster; minimap shrunk. Verified live (web join by name).
 - [ ] (next) named POIs / "near the Docks"; weapon rarity tiers; killstreaks
 
 ## Ideas for later (not started)

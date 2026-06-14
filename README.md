@@ -80,6 +80,9 @@ color, with 8-bit sound.*
   lobby of two is still a match of sixteen.
 - **Procedural 8-bit sound** — synthesized square-wave chiptune effects, no
   audio files. Mute with `M`. Silent automatically over SSH.
+- **Persistent identity** — pick a call sign and a hex-color skin; it renders
+  on the map, minimap, and roster, and sticks across sessions (a profile
+  dotfile locally, `localStorage` for browser players).
 - **Rebindable keys** with a built-in config screen, saved to a dotfile.
 - **Fog of war for free** — snapshots only contain what's near you (~1 KB,
   10/sec), so it's light enough to play over a phone hotspot.
@@ -171,6 +174,7 @@ ascii-royale solo --bots 9
 | `h` / `m` | use a medkit (+40 HP) |
 | `t` | throw a grenade (arcs where you face, bursts with area damage) |
 | `M` | mute / unmute sound |
+| `n` | name & skin editor (in the lobby) |
 | `k` | key bindings screen (in the lobby) |
 | `r` | ready up in the dropship lobby (all ready → drop early) |
 | Enter | start the match (host, in lobby) |
