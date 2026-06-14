@@ -1008,7 +1008,7 @@ fn draw_minimap(f: &mut Frame, view: Rect, map: &Map, snap: &Snapshot) {
             let outside = dx * dx + dy * dy > z.radius * z.radius;
             if let Some(c) = buf.cell_mut((inner.x + mx, inner.y + my)) {
                 if outside {
-                    buf_set(c, '░', Color::Blue, Modifier::DIM);
+                    buf_set(c, ':', Color::Blue, Modifier::DIM);
                 } else {
                     // Faint radar texture so the safe area always reads as land.
                     buf_set(c, '·', Color::DarkGray, Modifier::DIM);
