@@ -303,6 +303,9 @@ async fn handle_conn(
     let conn = incoming.await?;
     let (mut send, mut recv) = conn.accept_bi().await?;
 
+    // Reject out-of-date clients with a clear message before anything else.
+    super::protocol::server_handshake(&mut send, &mut recv).await?;
+
     // First frame must be Hello, and quickly.
     let hello = tokio::time::timeout(Duration::from_secs(10), recv_frame::<ClientMsg>(&mut recv))
         .await

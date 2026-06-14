@@ -23,6 +23,9 @@ pub async fn connect(ticket: &str, name: &str, color: u32) -> Result<ServerHandl
         .context("connecting to host (are they still in the lobby?)")?;
     let (mut send, mut recv) = conn.open_bi().await?;
 
+    // Version check first, so an out-of-date client gets a clear message
+    // instead of a mysterious dropped connection.
+    super::protocol::client_handshake(&mut send, &mut recv).await?;
     send_frame(&mut send, &ClientMsg::Hello { name: name.to_string(), color }).await?;
 
     let (srv_tx, srv_rx) = mpsc::channel::<ServerMsg>(64);
