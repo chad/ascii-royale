@@ -179,30 +179,46 @@ fn draw_browse(f: &mut Frame, rows: &[crate::net::lobby::Listing], selected: usi
 
 impl App {
     fn main_loop(&mut self, terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
+        // Redraw only when something actually changed (a new snapshot, a
+        // keypress, or an active screen-shake) instead of on a fixed ~30fps
+        // timer. The sim only advances at 10 Hz, so timer-driven redraws were
+        // mostly re-diffing identical frames — wasted CPU on the shared VM that
+        // browser players contend for. Input is polled tightly for snappiness.
+        let mut dirty = true;
         loop {
-            // Drain everything the server sent since last frame.
+            let mut changed = false;
             loop {
                 match self.handle.rx.try_recv() {
-                    Ok(msg) => self.on_server_msg(msg),
+                    Ok(msg) => {
+                        self.on_server_msg(msg);
+                        changed = true;
+                    }
                     Err(tokio::sync::mpsc::error::TryRecvError::Empty) => break,
                     Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
                         if !matches!(self.screen, Screen::Results(_) | Screen::Fatal(_)) {
                             self.link_lost = true;
                         }
+                        changed = true;
                         break;
                     }
                 }
             }
+            dirty |= changed || self.shake > 0;
 
-            terminal.draw(|f| self.draw(f))?;
-            self.shake = self.shake.saturating_sub(1);
+            if dirty {
+                terminal.draw(|f| self.draw(f))?;
+                self.shake = self.shake.saturating_sub(1);
+                dirty = self.shake > 0; // keep animating while shaking
+            }
 
-            if event::poll(Duration::from_millis(33))? {
+            if event::poll(Duration::from_millis(15))? {
                 if let Event::Key(key) = event::read()? {
-                    if (key.kind == KeyEventKind::Press || key.kind == KeyEventKind::Repeat)
-                        && self.on_key(key.code, key.modifiers) {
+                    if key.kind == KeyEventKind::Press || key.kind == KeyEventKind::Repeat {
+                        if self.on_key(key.code, key.modifiers) {
                             return Ok(());
                         }
+                        dirty = true;
+                    }
                 }
             }
         }
