@@ -194,11 +194,14 @@ pub async fn serve(
         }
     };
     println!("[web] landing page + /ticket + /stats on :{port}");
-    let page = Arc::new(landing_html(browser_play_url.as_deref()));
+    let page = Arc::new(landing_html(browser_play_url.is_some()));
+    // The /play intake page (name+skin → browser terminal); empty if no ttyd.
+    let play_page = Arc::new(browser_play_url.as_deref().map(play_html).unwrap_or_default());
     loop {
         let Ok((mut sock, _)) = listener.accept().await else { continue };
         let state = state.clone();
         let ticket = ticket.clone();
+        let play_page = play_page.clone();
         let page = page.clone();
         let lobby_id = lobby_id.clone();
         tokio::spawn(async move {
@@ -230,13 +233,15 @@ pub async fn serve(
                     ("application/json", json)
                 }
                 "/" | "/index.html" => ("text/html; charset=utf-8", (*page).clone()),
+                "/play" => ("text/html; charset=utf-8", (*play_page).clone()),
                 _ => ("text/plain; charset=utf-8", "not found\n".into()),
             };
-            let status = if matches!(path, "/" | "/index.html" | "/ticket" | "/stats" | "/lobby") {
-                "200 OK"
-            } else {
-                "404 Not Found"
-            };
+            let status =
+                if matches!(path, "/" | "/index.html" | "/ticket" | "/stats" | "/lobby" | "/play") {
+                    "200 OK"
+                } else {
+                    "404 Not Found"
+                };
             let resp = format!(
                 "HTTP/1.1 {status}\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\n\
                  Access-Control-Allow-Origin: *\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n{}",
@@ -252,15 +257,91 @@ pub async fn serve(
 /// Embedded so the arena binary is self-contained (no asset files to ship).
 const GAMEPLAY_GIF: &[u8] = include_bytes!("../../assets/gameplay.gif");
 
-fn landing_html(browser_play_url: Option<&str>) -> String {
-    let play_button = match browser_play_url {
-        Some(url) => format!(
-            r#"<a class="btn primary" href="{url}" target="_blank">▶ play in your browser</a>"#
-        ),
-        None => String::new(),
+fn landing_html(browser_play: bool) -> String {
+    // The button goes to /play (same origin) so the intake page can remember
+    // the player's name + skin in localStorage before opening the terminal.
+    let play_button = if browser_play {
+        r#"<a class="btn primary" href="/play">▶ play in your browser</a>"#.to_string()
+    } else {
+        String::new()
     };
     HTML.replace("{{PLAY_BUTTON}}", &play_button)
 }
+
+/// The /play intake page: remembers name + skin color in localStorage, then
+/// opens the ttyd terminal passing them as launch args (ttyd runs with -a).
+fn play_html(ttyd_url: &str) -> String {
+    PLAY_HTML.replace("{{TTYD}}", ttyd_url.trim_end_matches('/'))
+}
+
+const PLAY_HTML: &str = r##"<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ascii-royale — drop in</title>
+<style>
+  html,body{margin:0;height:100%;background:#0b0c12;color:#c0caf5;
+    font-family:ui-monospace,Menlo,Consolas,monospace;display:flex;
+    align-items:center;justify-content:center}
+  .card{background:#12141c;border:1px solid #222637;border-radius:14px;
+    padding:28px 30px;width:360px;text-align:center}
+  h1{color:#e0af68;font-size:22px;margin:0 0 4px}
+  p{color:#565f89;font-size:13px;margin:0 0 20px}
+  label{display:block;text-align:left;color:#565f89;font-size:12px;
+    text-transform:uppercase;letter-spacing:.12em;margin:14px 0 6px}
+  input[type=text]{width:100%;box-sizing:border-box;background:#0b0c12;
+    border:1px solid #222637;border-radius:8px;color:#c0caf5;
+    font:inherit;font-size:16px;padding:10px 12px}
+  input[type=text]:focus{outline:none;border-color:#7dcfff}
+  .row{display:flex;gap:10px;align-items:center}
+  input[type=color]{width:48px;height:44px;border:1px solid #222637;
+    border-radius:8px;background:#0b0c12;padding:2px}
+  .preview{font-size:22px;font-weight:bold;margin-top:4px}
+  button{margin-top:22px;width:100%;padding:12px;border-radius:8px;
+    border:1px solid #9ece6a;background:rgba(158,206,106,.12);color:#9ece6a;
+    font:inherit;font-size:16px;cursor:pointer}
+  button:hover{background:rgba(158,206,106,.22)}
+  a{color:#7dcfff;font-size:12px}
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>ascii-royale</h1>
+  <p>pick a call sign &amp; skin — we'll remember it on this device</p>
+  <label for="name">call sign</label>
+  <input id="name" type="text" maxlength="12" placeholder="drifter" autofocus>
+  <label for="color">skin</label>
+  <div class="row">
+    <input id="color" type="color" value="#ffd75f">
+    <span class="preview" id="prev">@ you</span>
+  </div>
+  <button id="go">drop in ▶</button>
+  <p style="margin-top:16px"><a href="/">← back to the leaderboard</a></p>
+</div>
+<script>
+  const nameEl=document.getElementById('name'), colEl=document.getElementById('color'),
+        prev=document.getElementById('prev');
+  nameEl.value=(localStorage.getItem('ar_name')||'').slice(0,12);
+  colEl.value=localStorage.getItem('ar_color')||'#ffd75f';
+  const san=s=>s.replace(/[^A-Za-z0-9_-]/g,'').slice(0,12);
+  function render(){const n=san(nameEl.value)||'you';prev.textContent='@ '+n;prev.style.color=colEl.value;}
+  nameEl.oninput=colEl.oninput=render; render();
+  function go(){
+    const name=san(nameEl.value), color=colEl.value.replace('#','');
+    if(name) localStorage.setItem('ar_name',name);
+    localStorage.setItem('ar_color',color);
+    const args=[];
+    if(name){args.push('arg=--name','arg='+encodeURIComponent(name));}
+    args.push('arg=--color','arg='+encodeURIComponent(color));
+    location.href='{{TTYD}}/?'+args.join('&');
+  }
+  document.getElementById('go').onclick=go;
+  nameEl.addEventListener('keydown',e=>{if(e.key==='Enter')go();});
+</script>
+</body>
+</html>
+"##;
 
 const HTML: &str = r##"<!doctype html>
 <html lang="en">
@@ -471,9 +552,18 @@ mod tests {
     }
 
     #[test]
-    fn landing_page_has_play_button_only_when_url_given() {
-        assert!(landing_html(Some("https://x")).contains("play in your browser"));
-        assert!(!landing_html(None).contains("play in your browser"));
-        assert!(landing_html(None).contains("ascii-royale play"));
+    fn landing_page_has_play_button_only_when_enabled() {
+        assert!(landing_html(true).contains("play in your browser"));
+        assert!(landing_html(true).contains("href=\"/play\""));
+        assert!(!landing_html(false).contains("play in your browser"));
+        assert!(landing_html(false).contains("ascii-royale play"));
+    }
+
+    #[test]
+    fn play_intake_page_targets_the_terminal() {
+        let p = play_html("https://play.example.com/");
+        assert!(p.contains("https://play.example.com")); // ttyd target baked in
+        assert!(p.contains("ar_name") && p.contains("ar_color")); // localStorage keys
+        assert!(p.contains("arg=--name") && p.contains("arg=--color"));
     }
 }

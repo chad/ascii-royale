@@ -1,8 +1,26 @@
 #!/bin/bash
-# Browser-play entrypoint: ttyd runs this for each web visitor. Picks a random
-# call sign and drops them into the local arena (loopback HTTP ticket → iroh).
+# Browser-play entrypoint: ttyd (started with -a) runs this with the player's
+# chosen --name/--color appended from the URL. We honor ONLY those two args
+# (sanitized) and ignore anything else, then drop into the local arena.
 set -u
-name="web$((RANDOM % 9000 + 1000))"
-# stderr → /dev/null silences libasound's "cannot find card" probe noise on
-# this headless VM (the game runs fine without audio; sound is a local nicety).
-exec /usr/local/bin/ascii-royale play --arena http://127.0.0.1:8000/ticket --name "$name" 2>/dev/null
+
+name=""
+color=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --name) name="${2:-}"; shift 2 || shift ;;
+        --color) color="${2:-}"; shift 2 || shift ;;
+        *) shift ;;
+    esac
+done
+
+name=$(printf '%s' "$name" | tr -cd '[:alnum:]_-' | cut -c1-12)
+[ -z "$name" ] && name="web$((RANDOM % 9000 + 1000))"
+
+args=(play --arena http://127.0.0.1:8000/ticket --name "$name")
+if printf '%s' "$color" | grep -qiE '^#?[0-9a-fA-F]{6}$'; then
+    args+=(--color "${color#\#}")
+fi
+
+# stderr → /dev/null hides libasound's no-audio-device probe on this headless VM.
+exec /usr/local/bin/ascii-royale "${args[@]}" 2>/dev/null
