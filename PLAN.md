@@ -125,14 +125,15 @@ requirement fights the no-signup ethos). Reserve Freeq for a future *social*
 layer (DM-to-invite, challenges, community feed) if that becomes a goal.
 
 ## "Make it badass" sprint (before the team's topic-tracker upgrade)
-Each its own commit; build+clippy+tests green before moving on.
-- [ ] Supply drops: periodic airdrop crates with premium loot, map markers + feed
-- [ ] Grenades: throwable arc, area explosion, new throw input + sound
-- [ ] Combat juice: death explosions, hit-flash, screen shake, multi-kill feed
-- [ ] Minimap: corner overview (storm circle, you, nearby blips)
-- [ ] Spectate the killer after you die (not just your corpse)
-- [ ] Map character: named POIs / "near the Docks" locator
-- [ ] (stretch) weapon rarity tiers / reload; killstreak announces
+- [x] Supply drops: periodic airdrop crates (full loadout), feed announce, $ marker
+- [x] Grenades: throwable arc, falloff area burst, [t] input + throw/boom sound
+- [x] Combat juice: death explosions, hit sparks, screen-shake, multi-kill feed
+- [x] Minimap: corner overview (storm field, next ring, you, nearby foes)
+- [x] Spectate the killer after you die (camera rides your killer)
+- [x] 34 sim+UI tests green, clippy clean, gameplay GIF regenerated
+- [x] deployed + verified live: full match ran to a winner on the arena with
+      grenades/drops/effects active; royale.boxd.sh serves the new build + GIF
+- [ ] (next) named POIs / "near the Docks"; weapon rarity tiers; killstreaks
 
 ## Ideas for later (not started)
 - [ ] Spectate the killer instead of your corpse; match restart from results
