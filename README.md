@@ -101,7 +101,17 @@ cargo install --path .
 
 ## Play
 
-**In your browser — nothing to install:** open
+**Over SSH — nothing to install, no account:**
+
+```sh
+ssh -p 48958 play@royale.boxd.sh
+```
+
+Pick a call sign and you're in. (If prompted for a password, just press Enter —
+it's blank.) On first connect SSH will ask you to trust the host key; it should
+be `SHA256:MksQnpeWoT09c/zZGXGRDxNySe7wIoeWS1A542xxU/o`.
+
+**In your browser — also nothing to install:** open
 **[play.royale.boxd.sh](https://play.royale.boxd.sh)** (or the *play in your
 browser* button on **[royale.boxd.sh](https://royale.boxd.sh)**, which also has
 the live leaderboard). Pick a call sign and you're in the dropship.
@@ -274,11 +284,10 @@ straight into the name prompt. `deploy/` has the complete recipe:
   (with OpenSSH this even skips the password prompt entirely)
 - `sshd-hardening.conf` — everything else stays key-only
 
-Point your DNS at a host with a public SSH port and you're done. (The
-host needs inbound TCP — a plain VPS works; some sandboxes don't expose
-one, in which case you need a real tunnel, not a shared unauthenticated
-relay: those hand out ports first-come, so a published port can silently
-end up pointing at someone else's machine.)
+The host just needs a public TCP port pointed at the guest sshd. The reference
+arena runs on a [boxd](https://boxd.sh) VM and exposes it with
+`boxd expose royale 2222` → `royale.boxd.sh:48958`; a plain VPS works too. Tell
+players the host-key fingerprint so they can trust it on first connect.
 
 ## How it works
 
