@@ -3,6 +3,16 @@
 **A battle royale you play in your terminal.** Pure text, peer-to-peer over
 [iroh](https://iroh.computer) — no game server, no accounts, one binary.
 
+## ▶ Play right now
+
+```sh
+ssh -p 48958 play@royale.boxd.sh
+```
+
+That's it — no install, no account. Pick a call sign and you're dropping onto
+the island with whoever's online. (Blank password — just press Enter. Prefer a
+browser? **[play.royale.boxd.sh](https://play.royale.boxd.sh)**.)
+
 Up to 16 combatants drop onto a procedurally generated ASCII island. Scavenge
 weapons, dodge bullets you can actually see coming, and outrun the storm.
 Last one standing wins. Bots fill empty slots, so it's playable solo too.

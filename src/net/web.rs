@@ -261,7 +261,7 @@ fn landing_html(browser_play: bool) -> String {
     // The button goes to /play (same origin) so the intake page can remember
     // the player's name + skin in localStorage before opening the terminal.
     let play_button = if browser_play {
-        r#"<a class="btn primary" href="/play">▶ play in your browser</a>"#.to_string()
+        r#"<a class="btn" href="/play">play in your browser</a>"#.to_string()
     } else {
         String::new()
     };
@@ -381,11 +381,13 @@ const HTML: &str = r##"<!doctype html>
   .btn:hover{border-color:var(--cyan);color:var(--cyan)}
   .btn.primary{border-color:var(--green);color:var(--green)}
   .btn.primary:hover{background:rgba(158,206,106,.1)}
-  .cmd{display:flex;align-items:center;gap:10px;justify-content:center;margin:14px 0 0}
-  code.run{background:#000;border:1px solid var(--line);border-radius:8px;
-    padding:10px 16px;color:var(--green);font-size:16px;cursor:pointer}
-  code.run:hover{border-color:var(--green)}
-  .copyhint{color:var(--dim);font-size:12px}
+  .playnow{color:var(--green);font-weight:600;letter-spacing:.04em;margin:20px 0 8px}
+  .cmd{display:flex;align-items:center;gap:10px;justify-content:center;margin:0}
+  code.run{background:#000;border:1px solid var(--green);border-radius:10px;
+    padding:14px 22px;color:var(--green);font-size:clamp(15px,2.4vw,21px);cursor:pointer;
+    box-shadow:0 0 26px rgba(158,206,106,.14)}
+  code.run:hover{background:rgba(158,206,106,.08)}
+  .copyhint{color:var(--dim);font-size:12px;margin-top:8px}
   .grid{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin:38px 0}
   @media(max-width:680px){.grid{grid-template-columns:1fr}}
   .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px 20px}
@@ -423,14 +425,16 @@ const HTML: &str = r##"<!doctype html>
     <img class="hero" src="/gameplay.gif" alt="ascii-royale gameplay" loading="eager">
     <p class="muted" style="margin-top:-2px">an actual match — drop, scrap, last one standing</p>
     <div class="live"><span id="dot" class="dot"></span><span id="status">connecting…</span></div>
+    <p class="playnow">▶ play now — no install, no account</p>
+    <div class="cmd">
+      <code class="run" id="cmd" title="click to copy">ssh -p 48958 play@royale.boxd.sh</code>
+    </div>
+    <div class="copyhint">paste it in any terminal. blank password — just press Enter. <span id="copied"></span></div>
     <div class="cta">
       {{PLAY_BUTTON}}
       <a class="btn" href="https://github.com/chad/ascii-royale" target="_blank">★ source on github</a>
     </div>
-    <div class="cmd">
-      <code class="run" id="cmd" title="click to copy">ascii-royale play</code>
-    </div>
-    <div class="copyhint">have the binary? that one command drops you into this arena. <span id="copied"></span></div>
+    <div class="copyhint">also: <code>ascii-royale play</code> (cargo install) · <code>browse</code> for open games</div>
   </header>
 
   <div class="grid">
@@ -493,7 +497,7 @@ async function tick(){
 }
 function esc(s){const d=document.createElement('div');d.textContent=s;return d.innerHTML;}
 const cmd=document.getElementById('cmd');
-cmd.onclick=()=>{navigator.clipboard?.writeText('ascii-royale play');document.getElementById('copied').textContent='copied!';setTimeout(()=>document.getElementById('copied').textContent='',1500);};
+cmd.onclick=()=>{navigator.clipboard?.writeText(cmd.textContent);document.getElementById('copied').textContent='copied!';setTimeout(()=>document.getElementById('copied').textContent='',1500);};
 tick(); setInterval(tick,4000);
 </script>
 </body>
