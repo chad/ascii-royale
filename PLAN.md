@@ -42,19 +42,14 @@ Status legend: [ ] todo · [x] done · [~] in progress
 - [x] Rebindable keys: `k` config screen, ~/.config/ascii-royale/keys.conf
 - [x] README with captured frames, LICENSE, published to GitHub
 
-## SSH arena (boxd VM `royale`) — arena LIVE, public ingress PENDING boxd
+## SSH arena (boxd VM `royale`) — LIVE: ssh -p 48958 play@royale.boxd.sh
 - [x] `serve` mode + join queue + lifecycle (see above)
 - [x] VM created (royale, auto-suspend off), binary built & installed
-- [x] sshd on :2222 hardened; `play` guest (no password — none-auth works)
-- [x] royale-arena.service active, logs to /var/log/royale.log
-- [x] verified end-to-end via the VM's local sshd (launcher → iroh join → lobby)
-- [!] bore.pub ABANDONED: unauthenticated shared ports → published 22222
-      pointed at another user's box. Removed; do NOT use shared relays here.
-- [→] chose: ask boxd for a public TCP port. Draft ready in
-      deploy/boxd-tcp-request.md — chad to send to contact@boxd.sh.
-- [ ] when granted: point TCP endpoint at VM :2222, publish
-      `ssh -p <port> play@royale.boxd.sh` + host-key fingerprint
-      (SHA256:MksQnpeWoT09c/zZGXGRDxNySe7wIoeWS1A542xxU/o) in README + repo desc
+- [x] sshd on :2222 hardened; `play` guest; royale-arena.service active
+- [x] PUBLIC INGRESS RESOLVED 2026-06-19: boxd shipped direct TCP
+      (`boxd expose royale 2222` → royale.boxd.sh:48958). Verified host key ==
+      our VM's, keyless stranger reaches the launcher. README/desc lead with it.
+- [x] bore.pub hack fully gone (was unauth shared ports → stranger collision)
 - [ ] consider a cargo feature to build without rodio for headless servers
 
 ## Matchmaking — find others without sharing tickets (a → b)
